@@ -15,6 +15,7 @@ export type CacheTraceStage =
   | "prompt:before"
   | "prompt:images"
   | "stream:context"
+  | "cache-strategy:applied"
   | "session:after";
 
 export type CacheTraceEvent = {
@@ -40,6 +41,11 @@ export type CacheTraceEvent = {
   systemDigest?: string;
   note?: string;
   error?: string;
+  // Phase 8: cache strategy fields
+  segmentation?: boolean;
+  blockCount?: number;
+  historyBreakpointIndex?: number;
+  assistantTurnCount?: number;
 };
 
 export type CacheTrace = {
