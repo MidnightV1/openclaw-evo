@@ -123,6 +123,20 @@ const GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 const GOOGLE_DEFAULT_CONTEXT_WINDOW = 1048576;
 const GOOGLE_DEFAULT_MAX_TOKENS = 65536;
 // Pricing per 1M tokens (USD) — https://ai.google.dev/pricing
+// Gemini 2.5 series (stable GA)
+const GOOGLE_25_PRO_COST = {
+  input: 1.25,
+  output: 10.0,
+  cacheRead: 0,
+  cacheWrite: 0,
+};
+const GOOGLE_25_FLASH_COST = {
+  input: 0.3,
+  output: 2.5,
+  cacheRead: 0,
+  cacheWrite: 0,
+};
+// Gemini 3.x series (preview)
 const GOOGLE_PRO_COST = {
   input: 2.0,
   output: 12.0,
@@ -411,6 +425,26 @@ export function buildGoogleProvider(): ProviderConfig {
     baseUrl: GOOGLE_BASE_URL,
     api: "google-generative-ai",
     models: [
+      // Gemini 2.5 series — stable GA
+      {
+        id: "gemini-2.5-pro",
+        name: "Gemini 2.5 Pro",
+        reasoning: true,
+        input: ["text", "image"],
+        cost: GOOGLE_25_PRO_COST,
+        contextWindow: GOOGLE_DEFAULT_CONTEXT_WINDOW,
+        maxTokens: GOOGLE_DEFAULT_MAX_TOKENS,
+      },
+      {
+        id: "gemini-2.5-flash",
+        name: "Gemini 2.5 Flash",
+        reasoning: true,
+        input: ["text", "image"],
+        cost: GOOGLE_25_FLASH_COST,
+        contextWindow: GOOGLE_DEFAULT_CONTEXT_WINDOW,
+        maxTokens: GOOGLE_DEFAULT_MAX_TOKENS,
+      },
+      // Gemini 3.x series — preview
       {
         id: "gemini-3.1-pro-preview",
         name: "Gemini 3.1 Pro",
