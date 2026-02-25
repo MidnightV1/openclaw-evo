@@ -96,6 +96,19 @@ export const AgentDefaultsSchema = z
       })
       .strict()
       .optional(),
+    // Phase 8 — Dynamic cache strategy configuration.
+    cacheStrategy: z
+      .object({
+        systemPromptSegmentation: z.boolean().optional(),
+        historyWindowCaching: z.boolean().optional(),
+        windowSlideInterval: z.number().int().positive().optional(),
+        subagentWindowSlideInterval: z.number().int().positive().optional(),
+        minTurnsForCaching: z.number().int().nonnegative().optional(),
+        subagentMinTurnsForCaching: z.number().int().nonnegative().optional(),
+      })
+      .strict()
+      .optional(),
+    adaptivePrompt: z.boolean().optional(),
     thinkingDefault: z
       .union([
         z.literal("off"),

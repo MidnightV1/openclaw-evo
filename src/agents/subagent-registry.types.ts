@@ -1,7 +1,11 @@
 import type { DeliveryContext } from "../utils/delivery-context.js";
 import type { SubagentRunOutcome } from "./subagent-announce.js";
 import type { SubagentLifecycleEndedReason } from "./subagent-lifecycle-events.js";
-import type { SpawnSubagentMode } from "./subagent-spawn.js";
+import type {
+  SpawnSubagentMode,
+  SpawnSubagentToolPolicy,
+  SubagentResponseFormat,
+} from "./subagent-spawn.js";
 
 export type SubagentRunRecord = {
   runId: string;
@@ -15,6 +19,10 @@ export type SubagentRunRecord = {
   model?: string;
   runTimeoutSeconds?: number;
   spawnMode?: SpawnSubagentMode;
+  /** Response format requested at spawn time (json/text/structured). */
+  responseFormat?: SubagentResponseFormat;
+  /** Per-spawn tool policy override (allow/deny). Applied as highest-priority layer. */
+  spawnToolPolicy?: SpawnSubagentToolPolicy;
   createdAt: number;
   startedAt?: number;
   endedAt?: number;

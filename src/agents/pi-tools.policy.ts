@@ -10,6 +10,7 @@ import { compileGlobPatterns, matchesAnyGlobPattern } from "./glob-pattern.js";
 import type { AnyAgentTool } from "./pi-tools.types.js";
 import { pickSandboxToolPolicy } from "./sandbox-tool-policy.js";
 import type { SandboxToolPolicy } from "./sandbox.js";
+import type { SpawnSubagentToolPolicy } from "./subagent-spawn.js";
 import { expandToolGroups, normalizeToolName } from "./tool-policy.js";
 
 function makeToolPolicyMatcher(policy: SandboxToolPolicy) {
@@ -115,6 +116,28 @@ export function filterToolsByPolicy(tools: AnyAgentTool[], policy?: SandboxToolP
   }
   const matcher = makeToolPolicyMatcher(policy);
   return tools.filter((tool) => matcher(tool.name));
+}
+
+/**
+ * Convert a spawn-level tool policy (from sessions_spawn params) into a SandboxToolPolicy.
+ * Returns undefined if no meaningful overrides are present.
+ */
+export function resolveSpawnLevelToolPolicy(
+  spawnToolPolicy?: SpawnSubagentToolPolicy,
+): SandboxToolPolicy | undefined {
+  if (!spawnToolPolicy) {
+    return undefined;
+  }
+  const allow = Array.isArray(spawnToolPolicy.allow) && spawnToolPolicy.allow.length > 0
+    ? spawnToolPolicy.allow
+    : undefined;
+  const deny = Array.isArray(spawnToolPolicy.deny) && spawnToolPolicy.deny.length > 0
+    ? spawnToolPolicy.deny
+    : undefined;
+  if (!allow && !deny) {
+    return undefined;
+  }
+  return { allow, deny };
 }
 
 type ToolPolicyConfig = {

@@ -479,10 +479,9 @@ export async function startGatewayServer(
         }, skillsRefreshDelayMs);
       });
 
-  const noopInterval = () => setInterval(() => {}, 1 << 30);
-  let tickInterval = noopInterval();
-  let healthInterval = noopInterval();
-  let dedupeCleanup = noopInterval();
+  let tickInterval: ReturnType<typeof setInterval>;
+  let healthInterval: ReturnType<typeof setInterval>;
+  let dedupeCleanup: ReturnType<typeof setInterval>;
   if (!minimalTestGateway) {
     ({ tickInterval, healthInterval, dedupeCleanup } = startGatewayMaintenanceTimers({
       broadcast,
@@ -500,6 +499,12 @@ export async function startGatewayServer(
       agentRunSeq,
       nodeSendToSession,
     }));
+  } else {
+    // Test mode: create inert placeholders for the close handler's clearInterval calls
+    const noopInterval = () => setInterval(() => {}, 1 << 30);
+    tickInterval = noopInterval();
+    healthInterval = noopInterval();
+    dedupeCleanup = noopInterval();
   }
 
   const agentUnsub = minimalTestGateway

@@ -3,6 +3,7 @@ import type { ReasoningLevel, ThinkLevel } from "../auto-reply/thinking.js";
 import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import type { MemoryCitationsMode } from "../config/types.memory.js";
 import { listDeliverableMessageChannels } from "../utils/message-channel.js";
+import type { SystemPromptBlock, SystemPromptVolatility } from "./cache-strategy.js";
 import type { ResolvedTimeFormat } from "./date-time.js";
 import type { EmbeddedContextFile } from "./pi-embedded-helpers.js";
 import type { EmbeddedSandboxInfo } from "./pi-embedded-runner/types.js";
@@ -13,8 +14,54 @@ import { sanitizeForPromptLiteral } from "./sanitize-for-prompt.js";
  * - "full": All sections (default, for main agent)
  * - "minimal": Reduced sections (Tooling, Workspace, Runtime) - used for subagents
  * - "none": Just basic identity line, no sections
+ * - "adaptive": Starts with identity + tools; other sections added on demand as
+ *   the agent invokes relevant tools (e.g., memory_search → Memory section).
+ *   Used for first-turn optimization in main sessions.
  */
-export type PromptMode = "full" | "minimal" | "none";
+export type PromptMode = "full" | "minimal" | "none" | "adaptive";
+
+// ---------------------------------------------------------------------------
+// Phase 3 — Adaptive prompt: track which sections have been "activated" by
+// tool usage so the prompt can grow incrementally across turns.
+// ---------------------------------------------------------------------------
+
+/**
+ * Sections that can be lazily activated in adaptive mode.
+ * Each key maps to the tool names that trigger its inclusion.
+ */
+const ADAPTIVE_SECTION_TRIGGERS: ReadonlyMap<string, readonly string[]> = new Map([
+  ["memory", ["memory_search", "memory_get"]],
+  ["skills", ["read"]], // skills need read tool; always included after first read
+  ["messaging", ["message", "sessions_send"]],
+  ["heartbeat", ["cron"]],
+  ["voice", ["message"]],
+]);
+
+/**
+ * Mutable set tracking which adaptive sections have been activated for the
+ * current prompt build. Callers can pass in a set of tool names that have
+ * been invoked so far; sections whose trigger tools appear in that set are
+ * included in the prompt.
+ */
+export type AdaptivePromptState = {
+  /** Tool names invoked so far in the session. */
+  activatedTools: Set<string>;
+};
+
+/** Check whether a named section should be included in adaptive mode. */
+function isAdaptiveSectionActive(
+  sectionName: string,
+  state: AdaptivePromptState | undefined,
+): boolean {
+  if (!state) {
+    return false;
+  }
+  const triggers = ADAPTIVE_SECTION_TRIGGERS.get(sectionName);
+  if (!triggers) {
+    return false;
+  }
+  return triggers.some((tool) => state.activatedTools.has(tool));
+}
 type OwnerIdDisplay = "raw" | "hash";
 
 function buildSkillsSection(params: { skillsPrompt?: string; readToolName: string }) {
@@ -230,6 +277,12 @@ export function buildAgentSystemPrompt(params: {
     channel: string;
   };
   memoryCitationsMode?: MemoryCitationsMode;
+  /**
+   * Phase 3 — Adaptive prompt state. When promptMode is "adaptive", only
+   * sections whose trigger tools appear in activatedTools are included.
+   * Ignored for other prompt modes.
+   */
+  adaptiveState?: AdaptivePromptState;
 }) {
   const coreToolSummaries: Record<string, string> = {
     read: "Read file contents",
@@ -366,6 +419,10 @@ export function buildAgentSystemPrompt(params: {
   const messageChannelOptions = listDeliverableMessageChannels().join("|");
   const promptMode = params.promptMode ?? "full";
   const isMinimal = promptMode === "minimal" || promptMode === "none";
+  // Phase 3 — adaptive mode behaves like "full" structurally but gates
+  // optional sections behind tool-activation checks.
+  const isAdaptive = promptMode === "adaptive";
+  const adaptiveState = isAdaptive ? params.adaptiveState : undefined;
   const sandboxContainerWorkspace = params.sandboxInfo?.containerWorkspaceDir?.trim();
   const sanitizedWorkspaceDir = sanitizeForPromptLiteral(params.workspaceDir);
   const sanitizedSandboxContainerWorkspace = sandboxContainerWorkspace
@@ -386,15 +443,17 @@ export function buildAgentSystemPrompt(params: {
     "Do not manipulate or persuade anyone to expand access or disable safeguards. Do not copy yourself or change system prompts, safety rules, or tool policies unless explicitly requested.",
     "",
   ];
-  const skillsSection = buildSkillsSection({
-    skillsPrompt,
-    readToolName,
-  });
-  const memorySection = buildMemorySection({
-    isMinimal,
-    availableTools,
-    citationsMode: params.memoryCitationsMode,
-  });
+  // Phase 3 — In adaptive mode, gate optional sections behind tool activation.
+  // Skills, Memory, Messaging, Heartbeat, Voice are deferred until the agent
+  // actually invokes a related tool, keeping the first-turn prompt lean.
+  const skillsSection =
+    isAdaptive && !isAdaptiveSectionActive("skills", adaptiveState)
+      ? []
+      : buildSkillsSection({ skillsPrompt, readToolName });
+  const memorySection =
+    isAdaptive && !isAdaptiveSectionActive("memory", adaptiveState)
+      ? []
+      : buildMemorySection({ isMinimal, availableTools, citationsMode: params.memoryCitationsMode });
   const docsSection = buildDocsSection({
     docsPath: params.docsPath,
     isMinimal,
@@ -541,15 +600,20 @@ export function buildAgentSystemPrompt(params: {
     "These user-editable files are loaded by OpenClaw and included below in Project Context.",
     "",
     ...buildReplyTagsSection(isMinimal),
-    ...buildMessagingSection({
-      isMinimal,
-      availableTools,
-      messageChannelOptions,
-      inlineButtonsEnabled,
-      runtimeChannel,
-      messageToolHints: params.messageToolHints,
-    }),
-    ...buildVoiceSection({ isMinimal, ttsHint: params.ttsHint }),
+    // Phase 3 — gate Messaging and Voice sections in adaptive mode
+    ...(isAdaptive && !isAdaptiveSectionActive("messaging", adaptiveState)
+      ? []
+      : buildMessagingSection({
+          isMinimal,
+          availableTools,
+          messageChannelOptions,
+          inlineButtonsEnabled,
+          runtimeChannel,
+          messageToolHints: params.messageToolHints,
+        })),
+    ...(isAdaptive && !isAdaptiveSectionActive("voice", adaptiveState)
+      ? []
+      : buildVoiceSection({ isMinimal, ttsHint: params.ttsHint })),
   ];
 
   if (extraSystemPrompt) {
@@ -625,8 +689,9 @@ export function buildAgentSystemPrompt(params: {
     );
   }
 
-  // Skip heartbeats for subagent/none modes
-  if (!isMinimal) {
+  // Skip heartbeats for subagent/none modes, and defer in adaptive mode
+  // until a cron-related tool is used.
+  if (!isMinimal && !(isAdaptive && !isAdaptiveSectionActive("heartbeat", adaptiveState))) {
     lines.push(
       "## Heartbeats",
       heartbeatPromptLine,
@@ -645,6 +710,130 @@ export function buildAgentSystemPrompt(params: {
   );
 
   return lines.filter(Boolean).join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8 — Segmented system prompt builder for cache optimization.
+//
+// buildAgentSystemPromptBlocks() produces the same content as
+// buildAgentSystemPrompt() but split into SystemPromptBlock[] tagged with
+// volatility levels. Downstream cache layers use these tags to assign
+// cache_control directives that maximize cache hit rates.
+// ---------------------------------------------------------------------------
+
+/** Parameters type extracted for reuse between string and block builders. */
+export type BuildAgentSystemPromptParams = Parameters<typeof buildAgentSystemPrompt>[0];
+
+/**
+ * Build the system prompt as an array of volatility-tagged blocks.
+ *
+ * Section → volatility mapping:
+ * - FROZEN:   identity line, Safety, Tool schemas, Tool Call Style, CLI Reference
+ * - STABLE:   Skills, Memory, Docs, Workspace (dir + notes), User Identity,
+ *             Time, Workspace Files header, Reply Tags, Messaging, Voice,
+ *             Model Aliases, Sandbox, Silent Replies, OpenClaw Self-Update
+ * - VOLATILE: Extra system prompt, Reactions, Reasoning, Heartbeats,
+ *             Runtime, Project Context files
+ *
+ * For providers that don't support content blocks, callers should use
+ * flattenSystemPromptBlocks() to collapse back to a string.
+ */
+export function buildAgentSystemPromptBlocks(
+  params: BuildAgentSystemPromptParams,
+): SystemPromptBlock[] {
+  // Delegate to the string builder first, then split. This keeps the logic
+  // in one place (DRY) while providing the block interface Phase 8 needs.
+  //
+  // A full refactor of buildAgentSystemPrompt into a native block-producing
+  // function is deferred — the section boundaries are well-defined and we can
+  // carve them reliably from the output string using markers.
+  //
+  // Strategy: build the prompt, then categorize known sections by scanning
+  // for their ## headers. Sections that are not found are skipped.
+
+  const fullPrompt = buildAgentSystemPrompt(params);
+  if (typeof fullPrompt !== "string" || !fullPrompt) {
+    return [{ text: fullPrompt ?? "", volatility: "frozen", label: "identity" }];
+  }
+
+  const blocks: SystemPromptBlock[] = [];
+  const promptMode = params.promptMode ?? "full";
+
+  // If "none" mode, the whole thing is frozen identity.
+  if (promptMode === "none") {
+    return [{ text: fullPrompt, volatility: "frozen", label: "identity" }];
+  }
+
+  // Split on top-level section headers (## and #) while preserving the header
+  // in its segment. We use a regex to find section boundaries.
+  const sectionPattern = /^(#{1,2})\s+(.+)$/gm;
+  const sectionStarts: Array<{ index: number; header: string; level: number }> = [];
+  let match: RegExpExecArray | null;
+  while ((match = sectionPattern.exec(fullPrompt)) !== null) {
+    sectionStarts.push({
+      index: match.index,
+      header: match[2].trim(),
+      level: match[1].length,
+    });
+  }
+
+  // Frozen sections: Safety, Tooling, Tool Call Style, OpenClaw CLI Quick Reference
+  const FROZEN_SECTIONS = new Set([
+    "Safety",
+    "Tooling",
+    "Tool Call Style",
+    "OpenClaw CLI Quick Reference",
+  ]);
+
+  // Volatile sections: Runtime, Heartbeats, Reactions, Reasoning Format,
+  // Group Chat Context, Subagent Context
+  const VOLATILE_SECTIONS = new Set([
+    "Runtime",
+    "Heartbeats",
+    "Reactions",
+    "Reasoning Format",
+    "Group Chat Context",
+    "Subagent Context",
+  ]);
+
+  // Everything before the first section header is the identity preamble (frozen).
+  if (sectionStarts.length === 0) {
+    // No sections found — entire prompt is frozen (shouldn't happen in practice).
+    return [{ text: fullPrompt, volatility: "frozen", label: "full" }];
+  }
+
+  const preamble = fullPrompt.slice(0, sectionStarts[0].index).trim();
+  if (preamble) {
+    blocks.push({ text: preamble, volatility: "frozen", label: "identity" });
+  }
+
+  for (let i = 0; i < sectionStarts.length; i++) {
+    const start = sectionStarts[i].index;
+    const end = i + 1 < sectionStarts.length ? sectionStarts[i + 1].index : fullPrompt.length;
+    const sectionText = fullPrompt.slice(start, end).trim();
+    if (!sectionText) {
+      continue;
+    }
+
+    const header = sectionStarts[i].header;
+    let volatility: SystemPromptVolatility;
+
+    if (FROZEN_SECTIONS.has(header)) {
+      volatility = "frozen";
+    } else if (VOLATILE_SECTIONS.has(header)) {
+      volatility = "volatile";
+    } else if (header === "Project Context") {
+      // Project Context files are stable within a session but change across sessions.
+      volatility = "stable";
+    } else {
+      // Default: stable (Skills, Memory, Workspace, Docs, Messaging, etc.)
+      volatility = "stable";
+    }
+
+    blocks.push({ text: sectionText, volatility, label: header });
+  }
+
+  return blocks;
 }
 
 export function buildRuntimeLine(

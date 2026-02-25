@@ -30,6 +30,7 @@ import {
   isToolAllowedByPolicies,
   resolveEffectiveToolPolicy,
   resolveGroupToolPolicy,
+  resolveSpawnLevelToolPolicy,
   resolveSubagentToolPolicy,
 } from "./pi-tools.policy.js";
 import {
@@ -49,6 +50,7 @@ import { cleanToolSchemaForGemini, normalizeToolParameters } from "./pi-tools.sc
 import type { AnyAgentTool } from "./pi-tools.types.js";
 import type { SandboxContext } from "./sandbox.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
+import { resolveSpawnToolPolicyForSession } from "./subagent-registry.js";
 import { createToolFsPolicy } from "./tool-fs-policy.js";
 import {
   applyToolPolicyPipeline,
@@ -279,6 +281,11 @@ export function createOpenClawCodingTools(options?: {
           getSubagentDepthFromSessionStore(options.sessionKey, { cfg: options.config }),
         )
       : undefined;
+  // Per-spawn tool policy: highest priority override specified at sessions_spawn time.
+  const spawnLevelPolicy =
+    isSubagentSessionKey(options?.sessionKey) && options?.sessionKey
+      ? resolveSpawnLevelToolPolicy(resolveSpawnToolPolicyForSession(options.sessionKey))
+      : undefined;
   const allowBackground = isToolAllowedByPolicies("process", [
     profilePolicyWithAlsoAllow,
     providerProfilePolicyWithAlsoAllow,
@@ -289,6 +296,7 @@ export function createOpenClawCodingTools(options?: {
     groupPolicy,
     sandbox?.tools,
     subagentPolicy,
+    spawnLevelPolicy,
   ]);
   const execConfig = resolveExecConfig({ cfg: options?.config, agentId });
   const fsConfig = resolveFsConfig({ cfg: options?.config, agentId });
@@ -476,6 +484,7 @@ export function createOpenClawCodingTools(options?: {
         groupPolicy,
         sandbox?.tools,
         subagentPolicy,
+        spawnLevelPolicy,
       ]),
       currentChannelId: options?.currentChannelId,
       currentThreadTs: options?.currentThreadTs,
@@ -512,6 +521,7 @@ export function createOpenClawCodingTools(options?: {
       }),
       { policy: sandbox?.tools, label: "sandbox tools.allow" },
       { policy: subagentPolicy, label: "subagent tools.allow" },
+      { policy: spawnLevelPolicy, label: "spawn-level tools.allow" },
     ],
   });
   // Always normalize tool JSON Schemas before handing them to pi-agent/pi-ai.

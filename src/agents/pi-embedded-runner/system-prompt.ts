@@ -3,7 +3,13 @@ import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import type { MemoryCitationsMode } from "../../config/types.memory.js";
 import type { ResolvedTimeFormat } from "../date-time.js";
 import type { EmbeddedContextFile } from "../pi-embedded-helpers.js";
-import { buildAgentSystemPrompt, type PromptMode } from "../system-prompt.js";
+import type { SystemPromptBlock } from "../cache-strategy.js";
+import {
+  buildAgentSystemPrompt,
+  buildAgentSystemPromptBlocks,
+  type AdaptivePromptState,
+  type PromptMode,
+} from "../system-prompt.js";
 import { buildToolSummaryMap } from "../tool-summaries.js";
 import type { EmbeddedSandboxInfo } from "./types.js";
 import type { ReasoningLevel, ThinkLevel } from "./utils.js";
@@ -50,6 +56,8 @@ export function buildEmbeddedSystemPrompt(params: {
   userTimeFormat?: ResolvedTimeFormat;
   contextFiles?: EmbeddedContextFile[];
   memoryCitationsMode?: MemoryCitationsMode;
+  /** Phase 3 — Adaptive prompt state for incremental section activation. */
+  adaptiveState?: AdaptivePromptState;
 }): string {
   return buildAgentSystemPrompt({
     workspaceDir: params.workspaceDir,
@@ -78,6 +86,45 @@ export function buildEmbeddedSystemPrompt(params: {
     userTimeFormat: params.userTimeFormat,
     contextFiles: params.contextFiles,
     memoryCitationsMode: params.memoryCitationsMode,
+    adaptiveState: params.adaptiveState,
+  });
+}
+
+/**
+ * Phase 8 — Build the system prompt as volatility-tagged blocks for cache optimization.
+ * Same params as buildEmbeddedSystemPrompt but returns SystemPromptBlock[].
+ */
+export function buildEmbeddedSystemPromptBlocks(
+  params: Parameters<typeof buildEmbeddedSystemPrompt>[0],
+): SystemPromptBlock[] {
+  return buildAgentSystemPromptBlocks({
+    workspaceDir: params.workspaceDir,
+    defaultThinkLevel: params.defaultThinkLevel,
+    reasoningLevel: params.reasoningLevel,
+    extraSystemPrompt: params.extraSystemPrompt,
+    ownerNumbers: params.ownerNumbers,
+    ownerDisplay: params.ownerDisplay,
+    ownerDisplaySecret: params.ownerDisplaySecret,
+    reasoningTagHint: params.reasoningTagHint,
+    heartbeatPrompt: params.heartbeatPrompt,
+    skillsPrompt: params.skillsPrompt,
+    docsPath: params.docsPath,
+    ttsHint: params.ttsHint,
+    workspaceNotes: params.workspaceNotes,
+    reactionGuidance: params.reactionGuidance,
+    promptMode: params.promptMode,
+    runtimeInfo: params.runtimeInfo,
+    messageToolHints: params.messageToolHints,
+    sandboxInfo: params.sandboxInfo,
+    toolNames: params.tools.map((tool) => tool.name),
+    toolSummaries: buildToolSummaryMap(params.tools),
+    modelAliasLines: params.modelAliasLines,
+    userTimezone: params.userTimezone,
+    userTime: params.userTime,
+    userTimeFormat: params.userTimeFormat,
+    contextFiles: params.contextFiles,
+    memoryCitationsMode: params.memoryCitationsMode,
+    adaptiveState: params.adaptiveState,
   });
 }
 

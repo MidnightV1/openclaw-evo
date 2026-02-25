@@ -5,6 +5,7 @@ import type { OpenClawConfig } from "../config/config.js";
 import {
   filterToolsByPolicy,
   isToolAllowedByPolicyName,
+  resolveSpawnLevelToolPolicy,
   resolveSubagentToolPolicy,
 } from "./pi-tools.policy.js";
 
@@ -185,5 +186,92 @@ describe("resolveSubagentToolPolicy depth awareness", () => {
     const policy = resolveSubagentToolPolicy(leafCfg);
     // Default depth=1, maxSpawnDepth=1 → leaf
     expect(isToolAllowedByPolicyName("sessions_spawn", policy)).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// resolveSpawnLevelToolPolicy — Phase 4 sub-agent communication
+// ─────────────────────────────────────────────────────────────
+
+describe("resolveSpawnLevelToolPolicy", () => {
+  it("returns undefined when policy is undefined", () => {
+    expect(resolveSpawnLevelToolPolicy(undefined)).toBeUndefined();
+  });
+
+  it("returns undefined when policy is an empty object", () => {
+    expect(resolveSpawnLevelToolPolicy({})).toBeUndefined();
+  });
+
+  it("returns undefined when allow is an empty array", () => {
+    expect(resolveSpawnLevelToolPolicy({ allow: [] })).toBeUndefined();
+  });
+
+  it("returns undefined when deny is an empty array", () => {
+    expect(resolveSpawnLevelToolPolicy({ deny: [] })).toBeUndefined();
+  });
+
+  it("returns undefined when both allow and deny are empty arrays", () => {
+    expect(resolveSpawnLevelToolPolicy({ allow: [], deny: [] })).toBeUndefined();
+  });
+
+  it("returns policy with allow when allow has entries", () => {
+    const result = resolveSpawnLevelToolPolicy({ allow: ["read", "glob"] });
+    expect(result).toEqual({ allow: ["read", "glob"], deny: undefined });
+  });
+
+  it("returns policy with deny when deny has entries", () => {
+    const result = resolveSpawnLevelToolPolicy({ deny: ["bash"] });
+    expect(result).toEqual({ allow: undefined, deny: ["bash"] });
+  });
+
+  it("returns policy with both allow and deny when both have entries", () => {
+    const result = resolveSpawnLevelToolPolicy({
+      allow: ["read", "glob"],
+      deny: ["bash"],
+    });
+    expect(result).toEqual({ allow: ["read", "glob"], deny: ["bash"] });
+  });
+});
+
+// End-to-end: resolveSpawnLevelToolPolicy → isToolAllowedByPolicyName
+describe("resolveSpawnLevelToolPolicy + isToolAllowedByPolicyName (integration)", () => {
+  it("allow: ['read', 'glob'] — only allows read and glob", () => {
+    const policy = resolveSpawnLevelToolPolicy({ allow: ["read", "glob"] });
+    expect(isToolAllowedByPolicyName("read", policy)).toBe(true);
+    expect(isToolAllowedByPolicyName("glob", policy)).toBe(true);
+    expect(isToolAllowedByPolicyName("exec", policy)).toBe(false);
+    expect(isToolAllowedByPolicyName("write", policy)).toBe(false);
+  });
+
+  it("deny: ['bash'] — excludes bash (aliased to exec), allows others", () => {
+    const policy = resolveSpawnLevelToolPolicy({ deny: ["bash"] });
+    // "bash" is aliased to "exec" via normalizeToolName
+    expect(isToolAllowedByPolicyName("bash", policy)).toBe(false);
+    expect(isToolAllowedByPolicyName("exec", policy)).toBe(false);
+    expect(isToolAllowedByPolicyName("read", policy)).toBe(true);
+    expect(isToolAllowedByPolicyName("glob", policy)).toBe(true);
+  });
+
+  it("allow + deny — deny takes priority over allow", () => {
+    const policy = resolveSpawnLevelToolPolicy({
+      allow: ["read", "glob", "exec"],
+      deny: ["exec"],
+    });
+    expect(isToolAllowedByPolicyName("read", policy)).toBe(true);
+    expect(isToolAllowedByPolicyName("glob", policy)).toBe(true);
+    expect(isToolAllowedByPolicyName("exec", policy)).toBe(false);
+  });
+
+  it("allow: ['*'] — allows all tools (wildcard)", () => {
+    const policy = resolveSpawnLevelToolPolicy({ allow: ["*"] });
+    expect(isToolAllowedByPolicyName("read", policy)).toBe(true);
+    expect(isToolAllowedByPolicyName("exec", policy)).toBe(true);
+    expect(isToolAllowedByPolicyName("some_random_tool", policy)).toBe(true);
+  });
+
+  it("undefined policy — everything is allowed (no restriction)", () => {
+    const policy = resolveSpawnLevelToolPolicy(undefined);
+    expect(isToolAllowedByPolicyName("read", policy)).toBe(true);
+    expect(isToolAllowedByPolicyName("exec", policy)).toBe(true);
   });
 });

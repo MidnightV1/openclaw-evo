@@ -1,0 +1,14 @@
+{
+  "name": "@openclaw/task-logging",
+  "version": "2026.2.25",
+  "description": "Task execution logging — records subtask lifecycle into markdown reports",
+  "type": "module",
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

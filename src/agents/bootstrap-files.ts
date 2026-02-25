@@ -10,6 +10,7 @@ import {
 import {
   filterBootstrapFilesForSession,
   loadWorkspaceBootstrapFiles,
+  type TaskContext,
   type WorkspaceBootstrapFile,
 } from "./workspace.js";
 
@@ -47,6 +48,8 @@ export async function resolveBootstrapFilesForRun(params: {
   sessionKey?: string;
   sessionId?: string;
   agentId?: string;
+  /** Optional task context hint for tag-based bootstrap file filtering. */
+  taskContext?: TaskContext;
   warn?: (message: string) => void;
 }): Promise<WorkspaceBootstrapFile[]> {
   const sessionKey = params.sessionKey ?? params.sessionId;
@@ -56,7 +59,7 @@ export async function resolveBootstrapFilesForRun(params: {
         sessionKey: params.sessionKey,
       })
     : await loadWorkspaceBootstrapFiles(params.workspaceDir);
-  const bootstrapFiles = filterBootstrapFilesForSession(rawFiles, sessionKey);
+  const bootstrapFiles = filterBootstrapFilesForSession(rawFiles, sessionKey, params.taskContext);
 
   const updated = await applyBootstrapHookOverrides({
     files: bootstrapFiles,
@@ -75,6 +78,8 @@ export async function resolveBootstrapContextForRun(params: {
   sessionKey?: string;
   sessionId?: string;
   agentId?: string;
+  /** Optional task context hint for tag-based bootstrap file filtering. */
+  taskContext?: TaskContext;
   warn?: (message: string) => void;
 }): Promise<{
   bootstrapFiles: WorkspaceBootstrapFile[];

@@ -382,9 +382,20 @@ function createOpenRouterSystemCacheWrapper(baseStreamFn: StreamFn | undefined):
                 { type: "text", text: msg.content, cache_control: { type: "ephemeral" } },
               ];
             } else if (Array.isArray(msg.content) && msg.content.length > 0) {
-              const last = msg.content[msg.content.length - 1];
-              if (last && typeof last === "object") {
-                (last as Record<string, unknown>).cache_control = { type: "ephemeral" };
+              // If any content block already has cache_control (e.g., set by
+              // the segmented system cache wrapper), skip — adding another
+              // breakpoint would conflict and waste the Anthropic 4-breakpoint budget.
+              const alreadyHasCacheControl = msg.content.some(
+                (block: unknown) =>
+                  block &&
+                  typeof block === "object" &&
+                  "cache_control" in (block as Record<string, unknown>),
+              );
+              if (!alreadyHasCacheControl) {
+                const last = msg.content[msg.content.length - 1];
+                if (last && typeof last === "object") {
+                  (last as Record<string, unknown>).cache_control = { type: "ephemeral" };
+                }
               }
             }
           }
@@ -501,6 +512,169 @@ function createZaiToolStreamWrapper(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Phase 8 — Volatility-based cache_control injection for segmented system prompts.
+//
+// When system prompt blocks are provided, this wrapper converts the single
+// system message string into an array of content blocks, each tagged with
+// cache_control based on its volatility:
+//   frozen  → { type: "ephemeral" }  (long-lived, max reuse)
+//   stable  → { type: "ephemeral" }  (session-scoped, still worth caching)
+//   volatile → no cache_control      (changes every turn, don't pollute cache)
+//
+// Anthropic's API treats each content block with cache_control as a cache
+// breakpoint — by placing them at frozen/stable boundaries we maximize hits.
+// ---------------------------------------------------------------------------
+
+type SystemPromptBlockLike = {
+  text: string;
+  volatility: "frozen" | "stable" | "volatile";
+};
+
+/**
+ * Provider families that support content-block-level cache_control.
+ * Others fall back to the existing single-block caching or no caching.
+ */
+const SEGMENTED_CACHE_PROVIDERS = new Set(["anthropic", "openrouter"]);
+
+function supportsSegmentedCache(provider: string, modelId: string): boolean {
+  const p = provider.toLowerCase();
+  if (SEGMENTED_CACHE_PROVIDERS.has(p)) {
+    // OpenRouter only supports it for Anthropic models
+    if (p === "openrouter") {
+      return modelId.toLowerCase().startsWith("anthropic/");
+    }
+    return true;
+  }
+  // Amazon Bedrock Anthropic models also support it
+  if (p === "amazon-bedrock") {
+    return isAnthropicBedrockModel(modelId);
+  }
+  return false;
+}
+
+/**
+ * Create a streamFn wrapper that replaces the system message string with
+ * content blocks annotated with cache_control based on volatility tags.
+ *
+ * When the provider doesn't support segmented caching, or no blocks are
+ * provided, the wrapper is a no-op passthrough.
+ */
+function createSegmentedSystemCacheWrapper(
+  baseStreamFn: StreamFn | undefined,
+  blocks: SystemPromptBlockLike[] | undefined,
+  provider: string,
+  modelId: string,
+): StreamFn {
+  const underlying = baseStreamFn ?? streamSimple;
+
+  // No blocks or unsupported provider → passthrough
+  if (!blocks || blocks.length === 0 || !supportsSegmentedCache(provider, modelId)) {
+    return underlying;
+  }
+
+  return (model, context, options) => {
+    const originalOnPayload = options?.onPayload;
+    return underlying(model, context, {
+      ...options,
+      onPayload: (payload) => {
+        const messages = (payload as Record<string, unknown>)?.messages;
+        if (Array.isArray(messages)) {
+          for (const msg of messages as PayloadMessage[]) {
+            if (msg.role !== "system" && msg.role !== "developer") {
+              continue;
+            }
+            // Replace string content with volatility-tagged content blocks.
+            // Only proceed if the content is still a plain string (hasn't been
+            // transformed by another wrapper like createOpenRouterSystemCacheWrapper).
+            if (typeof msg.content === "string") {
+              // Anthropic allows at most 4 cache breakpoints per request.
+              // Only place cache_control on the *last* frozen block and the
+              // *last* stable block (up to 2 breakpoints in system prompt),
+              // leaving budget for history breakpoints.
+              let lastFrozenIdx = -1;
+              let lastStableIdx = -1;
+              for (let i = 0; i < blocks.length; i++) {
+                if (blocks[i].volatility === "frozen") lastFrozenIdx = i;
+                if (blocks[i].volatility === "stable") lastStableIdx = i;
+              }
+              msg.content = blocks.map((block, idx) => {
+                const contentBlock: Record<string, unknown> = {
+                  type: "text",
+                  text: block.text,
+                };
+                if (idx === lastFrozenIdx || idx === lastStableIdx) {
+                  contentBlock.cache_control = { type: "ephemeral" };
+                }
+                return contentBlock;
+              });
+            }
+          }
+        }
+        originalOnPayload?.(payload);
+      },
+    });
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8 — History sliding window cache_control injection.
+//
+// Places a cache breakpoint at a computed position in the message history
+// so that the "stable prefix" of the conversation is cached and reused.
+// The breakpoint slides forward every N turns to keep the cached prefix
+// growing while maintaining a stable boundary.
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a streamFn wrapper that injects cache_control at the computed
+ * history breakpoint position.
+ *
+ * @param breakpointIndex - The 0-based index in the messages array where
+ *   cache_control should be injected. -1 means skip.
+ */
+function createHistoryBreakpointCacheWrapper(
+  baseStreamFn: StreamFn | undefined,
+  breakpointIndex: number,
+  provider: string,
+  modelId: string,
+): StreamFn {
+  const underlying = baseStreamFn ?? streamSimple;
+
+  if (breakpointIndex < 0 || !supportsSegmentedCache(provider, modelId)) {
+    return underlying;
+  }
+
+  return (model, context, options) => {
+    const originalOnPayload = options?.onPayload;
+    return underlying(model, context, {
+      ...options,
+      onPayload: (payload) => {
+        const messages = (payload as Record<string, unknown>)?.messages;
+        if (Array.isArray(messages) && breakpointIndex < messages.length) {
+          const targetMsg = messages[breakpointIndex] as Record<string, unknown> | undefined;
+          if (targetMsg) {
+            const content = targetMsg.content;
+            if (typeof content === "string") {
+              // Convert to content block array with cache_control on last block
+              targetMsg.content = [
+                { type: "text", text: content, cache_control: { type: "ephemeral" } },
+              ];
+            } else if (Array.isArray(content) && content.length > 0) {
+              // Add cache_control to the last content block
+              const last = content[content.length - 1];
+              if (last && typeof last === "object") {
+                (last as Record<string, unknown>).cache_control = { type: "ephemeral" };
+              }
+            }
+          }
+        }
+        originalOnPayload?.(payload);
+      },
+    });
+  };
+}
+
 /**
  * Apply extra params (like temperature) to an agent's streamFn.
  * Also adds OpenRouter app attribution headers when using the OpenRouter provider.
@@ -576,4 +750,59 @@ export function applyExtraParamsToAgent(
   // Force `store=true` for direct OpenAI/OpenAI Codex providers so multi-turn
   // server-side conversation state is preserved.
   agent.streamFn = createOpenAIResponsesStoreWrapper(agent.streamFn);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 8 — Public API for applying cache strategy wrappers to an agent.
+// Called from the run attempt after system prompt blocks are built.
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply Phase 8 dynamic cache strategy wrappers to an agent's streamFn.
+ *
+ * This is separate from applyExtraParamsToAgent so it can be called after
+ * the system prompt blocks are available (which happens later in the boot
+ * sequence than extra-params resolution).
+ *
+ * @param agent - The agent whose streamFn to wrap.
+ * @param params.systemPromptBlocks - Volatility-tagged prompt segments.
+ * @param params.historyBreakpointIndex - Where to place the history cache breakpoint (-1 to skip).
+ * @param params.provider - Provider name.
+ * @param params.modelId - Model ID.
+ */
+export function applyCacheStrategyToAgent(
+  agent: { streamFn?: StreamFn },
+  params: {
+    systemPromptBlocks?: SystemPromptBlockLike[];
+    historyBreakpointIndex?: number;
+    provider: string;
+    modelId: string;
+  },
+): void {
+  // Layer 1: System prompt segmentation
+  if (params.systemPromptBlocks && params.systemPromptBlocks.length > 0) {
+    log.debug(
+      `applying segmented system cache (${params.systemPromptBlocks.length} blocks) for ${params.provider}/${params.modelId}`,
+    );
+    agent.streamFn = createSegmentedSystemCacheWrapper(
+      agent.streamFn,
+      params.systemPromptBlocks,
+      params.provider,
+      params.modelId,
+    );
+  }
+
+  // Layer 2: History sliding window breakpoint
+  const bpIndex = params.historyBreakpointIndex ?? -1;
+  if (bpIndex >= 0) {
+    log.debug(
+      `applying history breakpoint cache at index ${bpIndex} for ${params.provider}/${params.modelId}`,
+    );
+    agent.streamFn = createHistoryBreakpointCacheWrapper(
+      agent.streamFn,
+      bpIndex,
+      params.provider,
+      params.modelId,
+    );
+  }
 }

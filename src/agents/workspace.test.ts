@@ -5,13 +5,16 @@ import { makeTempWorkspace, writeWorkspaceFile } from "../test-helpers/workspace
 import {
   DEFAULT_AGENTS_FILENAME,
   DEFAULT_BOOTSTRAP_FILENAME,
+  DEFAULT_HEARTBEAT_FILENAME,
   DEFAULT_IDENTITY_FILENAME,
   DEFAULT_MEMORY_ALT_FILENAME,
   DEFAULT_MEMORY_FILENAME,
+  DEFAULT_SOUL_FILENAME,
   DEFAULT_TOOLS_FILENAME,
   DEFAULT_USER_FILENAME,
   ensureAgentWorkspace,
   filterBootstrapFilesForSession,
+  getBootstrapFileTag,
   loadWorkspaceBootstrapFiles,
   resolveDefaultAgentWorkspaceDir,
   type WorkspaceBootstrapFile,
@@ -190,5 +193,153 @@ describe("filterBootstrapFilesForSession", () => {
     expect(names).not.toContain("HEARTBEAT.md");
     expect(names).not.toContain("BOOTSTRAP.md");
     expect(names).not.toContain("MEMORY.md");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3 — Bootstrap file tag system
+// ---------------------------------------------------------------------------
+// NOTE: BOOTSTRAP_FILE_TAG_MAP and TASK_CONTEXT_TAGS are not exported from
+// workspace.ts. Their behavior is tested indirectly through the exported
+// getBootstrapFileTag and filterBootstrapFilesForSession functions.
+
+describe("getBootstrapFileTag", () => {
+  it('returns "core" for IDENTITY.md', () => {
+    expect(getBootstrapFileTag(DEFAULT_IDENTITY_FILENAME)).toBe("core");
+  });
+
+  it('returns "core" for SOUL.md', () => {
+    expect(getBootstrapFileTag(DEFAULT_SOUL_FILENAME)).toBe("core");
+  });
+
+  it('returns "operational" for AGENTS.md', () => {
+    expect(getBootstrapFileTag(DEFAULT_AGENTS_FILENAME)).toBe("operational");
+  });
+
+  it('returns "operational" for TOOLS.md', () => {
+    expect(getBootstrapFileTag(DEFAULT_TOOLS_FILENAME)).toBe("operational");
+  });
+
+  it('returns "memory" for MEMORY.md', () => {
+    expect(getBootstrapFileTag(DEFAULT_MEMORY_FILENAME)).toBe("memory");
+  });
+
+  it('returns "memory" for memory.md (alt casing)', () => {
+    expect(getBootstrapFileTag(DEFAULT_MEMORY_ALT_FILENAME)).toBe("memory");
+  });
+
+  it('returns "memory" for USER.md', () => {
+    expect(getBootstrapFileTag(DEFAULT_USER_FILENAME)).toBe("memory");
+  });
+
+  it('returns "infra" for HEARTBEAT.md', () => {
+    expect(getBootstrapFileTag(DEFAULT_HEARTBEAT_FILENAME)).toBe("infra");
+  });
+
+  it('returns "infra" for BOOTSTRAP.md', () => {
+    expect(getBootstrapFileTag(DEFAULT_BOOTSTRAP_FILENAME)).toBe("infra");
+  });
+
+  it('defaults to "infra" for unknown filenames', () => {
+    expect(getBootstrapFileTag("UNKNOWN.md")).toBe("infra");
+    expect(getBootstrapFileTag("random-file.txt")).toBe("infra");
+    expect(getBootstrapFileTag("")).toBe("infra");
+  });
+});
+
+describe("filterBootstrapFilesForSession — tag-based taskContext filtering", () => {
+  /** Helper: build a complete set of bootstrap file stubs covering all tags. */
+  function allTaggedFiles(): WorkspaceBootstrapFile[] {
+    return [
+      { name: DEFAULT_IDENTITY_FILENAME, path: "/w/IDENTITY.md", content: "", missing: false },
+      { name: DEFAULT_SOUL_FILENAME, path: "/w/SOUL.md", content: "", missing: false },
+      { name: DEFAULT_AGENTS_FILENAME, path: "/w/AGENTS.md", content: "", missing: false },
+      { name: DEFAULT_TOOLS_FILENAME, path: "/w/TOOLS.md", content: "", missing: false },
+      { name: DEFAULT_MEMORY_FILENAME, path: "/w/MEMORY.md", content: "", missing: false },
+      { name: DEFAULT_USER_FILENAME, path: "/w/USER.md", content: "", missing: false },
+      { name: DEFAULT_HEARTBEAT_FILENAME, path: "/w/HEARTBEAT.md", content: "", missing: false },
+      { name: DEFAULT_BOOTSTRAP_FILENAME, path: "/w/BOOTSTRAP.md", content: "", missing: false },
+    ];
+  }
+
+  it('taskContext="query" → returns only core + operational files', () => {
+    const files = allTaggedFiles();
+    const result = filterBootstrapFilesForSession(files, undefined, "query");
+    const names = result.map((f) => f.name);
+    // core
+    expect(names).toContain(DEFAULT_IDENTITY_FILENAME);
+    expect(names).toContain(DEFAULT_SOUL_FILENAME);
+    // operational
+    expect(names).toContain(DEFAULT_AGENTS_FILENAME);
+    expect(names).toContain(DEFAULT_TOOLS_FILENAME);
+    // memory — excluded
+    expect(names).not.toContain(DEFAULT_MEMORY_FILENAME);
+    expect(names).not.toContain(DEFAULT_USER_FILENAME);
+    // infra — excluded
+    expect(names).not.toContain(DEFAULT_HEARTBEAT_FILENAME);
+    expect(names).not.toContain(DEFAULT_BOOTSTRAP_FILENAME);
+  });
+
+  it('taskContext="coding" → returns core + operational + memory', () => {
+    const files = allTaggedFiles();
+    const result = filterBootstrapFilesForSession(files, undefined, "coding");
+    const names = result.map((f) => f.name);
+    expect(names).toContain(DEFAULT_IDENTITY_FILENAME);
+    expect(names).toContain(DEFAULT_SOUL_FILENAME);
+    expect(names).toContain(DEFAULT_AGENTS_FILENAME);
+    expect(names).toContain(DEFAULT_TOOLS_FILENAME);
+    expect(names).toContain(DEFAULT_MEMORY_FILENAME);
+    expect(names).toContain(DEFAULT_USER_FILENAME);
+    // infra — excluded
+    expect(names).not.toContain(DEFAULT_HEARTBEAT_FILENAME);
+    expect(names).not.toContain(DEFAULT_BOOTSTRAP_FILENAME);
+  });
+
+  it('taskContext="session" → returns all files', () => {
+    const files = allTaggedFiles();
+    const result = filterBootstrapFilesForSession(files, undefined, "session");
+    expect(result).toHaveLength(files.length);
+  });
+
+  it("taskContext=undefined → returns all files (backward-compatible)", () => {
+    const files = allTaggedFiles();
+    const result = filterBootstrapFilesForSession(files, undefined, undefined);
+    expect(result).toHaveLength(files.length);
+  });
+
+  it("sub-agent session key overrides taskContext — always uses minimal allowlist", () => {
+    const files = allTaggedFiles();
+    const result = filterBootstrapFilesForSession(files, "agent:main:subagent:worker", "session");
+    const names = result.map((f) => f.name);
+    // Minimal allowlist includes AGENTS, TOOLS, SOUL, IDENTITY, USER
+    expect(names).toContain(DEFAULT_AGENTS_FILENAME);
+    expect(names).toContain(DEFAULT_TOOLS_FILENAME);
+    expect(names).toContain(DEFAULT_SOUL_FILENAME);
+    expect(names).toContain(DEFAULT_IDENTITY_FILENAME);
+    expect(names).toContain(DEFAULT_USER_FILENAME);
+    // Excluded
+    expect(names).not.toContain(DEFAULT_HEARTBEAT_FILENAME);
+    expect(names).not.toContain(DEFAULT_BOOTSTRAP_FILENAME);
+    expect(names).not.toContain(DEFAULT_MEMORY_FILENAME);
+  });
+
+  it("cron session key overrides taskContext — always uses minimal allowlist", () => {
+    const files = allTaggedFiles();
+    const result = filterBootstrapFilesForSession(files, "agent:main:cron:job-1", "session");
+    const names = result.map((f) => f.name);
+    expect(names).not.toContain(DEFAULT_HEARTBEAT_FILENAME);
+    expect(names).not.toContain(DEFAULT_BOOTSTRAP_FILENAME);
+    expect(names).not.toContain(DEFAULT_MEMORY_FILENAME);
+  });
+
+  it("main session key with taskContext uses tag-based filtering", () => {
+    const files = allTaggedFiles();
+    const result = filterBootstrapFilesForSession(files, "agent:main:main", "query");
+    const names = result.map((f) => f.name);
+    // query = core + operational only
+    expect(names).toContain(DEFAULT_IDENTITY_FILENAME);
+    expect(names).toContain(DEFAULT_AGENTS_FILENAME);
+    expect(names).not.toContain(DEFAULT_MEMORY_FILENAME);
+    expect(names).not.toContain(DEFAULT_HEARTBEAT_FILENAME);
   });
 });

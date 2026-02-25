@@ -896,6 +896,22 @@ export const FIELD_HELP: Record<string, string> = {
     "User-prompt template used for the pre-compaction memory flush turn when generating memory candidates. Use this only when you need custom extraction instructions beyond the default memory flush behavior.",
   "agents.defaults.compaction.memoryFlush.systemPrompt":
     "System-prompt override for the pre-compaction memory flush turn to control extraction style and safety constraints. Use carefully so custom instructions do not reduce memory quality or leak sensitive context.",
+  "agents.defaults.cacheStrategy":
+    "Dynamic cache strategy: segments the system prompt by volatility and places sliding window breakpoints in conversation history to maximize LLM provider cache hits. Enabled by default for Anthropic and OpenRouter providers; non-supporting providers fall back to string mode automatically.",
+  "agents.defaults.cacheStrategy.systemPromptSegmentation":
+    "Segment the system prompt into frozen/stable/volatile blocks and assign per-block cache_control. Frozen blocks (safety, tool schemas) get maximum reuse; volatile blocks (runtime info) are not cached.",
+  "agents.defaults.cacheStrategy.historyWindowCaching":
+    "Place a cache breakpoint in conversation history that slides forward at regular intervals, creating a stable prefix the provider can cache.",
+  "agents.defaults.cacheStrategy.windowSlideInterval":
+    "How often (in assistant turns) the history cache breakpoint slides forward. Higher values mean more cache reuse but older breakpoints; lower values give fresher boundaries with more cache misses.",
+  "agents.defaults.cacheStrategy.subagentWindowSlideInterval":
+    "Window slide interval for sub-agents. Defaults to 2 since sub-agent sessions are shorter.",
+  "agents.defaults.cacheStrategy.minTurnsForCaching":
+    "Minimum assistant turns before history window caching activates. Prevents breakpoint placement in very short conversations where caching has no benefit.",
+  "agents.defaults.cacheStrategy.subagentMinTurnsForCaching":
+    "Minimum turns for sub-agents before caching activates. Defaults to 2.",
+  "agents.defaults.adaptivePrompt":
+    "Enable adaptive prompt mode (Phase 3). When enabled, optional system prompt sections (skills, memory, messaging, voice, heartbeat) are deferred until the agent invokes a related tool, keeping the initial prompt lean.",
   "agents.defaults.humanDelay.mode": 'Delay style for block replies ("off", "natural", "custom").',
   "agents.defaults.humanDelay.minMs": "Minimum delay in ms for custom humanDelay (default: 800).",
   "agents.defaults.humanDelay.maxMs": "Maximum delay in ms for custom humanDelay (default: 2500).",

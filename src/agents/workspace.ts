@@ -125,6 +125,51 @@ export type WorkspaceBootstrapFile = {
   missing: boolean;
 };
 
+// ---------------------------------------------------------------------------
+// Phase 3 — Bootstrap file tag system
+// Tags categorize bootstrap files by role so different task contexts can load
+// only the subset they need, reducing initial context token waste.
+// ---------------------------------------------------------------------------
+
+/** Semantic tag describing a bootstrap file's role. */
+export type BootstrapFileTag = "core" | "operational" | "memory" | "infra";
+
+/**
+ * Task context hint that controls which bootstrap file tags are loaded.
+ * - "query":   Simple Q&A — only core + operational files
+ * - "coding":  Code-related work — core + operational + memory
+ * - "session": Full interactive session — all files
+ */
+export type TaskContext = "query" | "coding" | "session";
+
+/** Maps each bootstrap filename to its semantic tag. */
+const BOOTSTRAP_FILE_TAG_MAP: ReadonlyMap<string, BootstrapFileTag> = new Map([
+  [DEFAULT_IDENTITY_FILENAME, "core"],
+  [DEFAULT_SOUL_FILENAME, "core"],
+  [DEFAULT_AGENTS_FILENAME, "operational"],
+  [DEFAULT_TOOLS_FILENAME, "operational"],
+  [DEFAULT_MEMORY_FILENAME, "memory"],
+  [DEFAULT_MEMORY_ALT_FILENAME, "memory"],
+  [DEFAULT_USER_FILENAME, "memory"],
+  [DEFAULT_HEARTBEAT_FILENAME, "infra"],
+  [DEFAULT_BOOTSTRAP_FILENAME, "infra"],
+]);
+
+/** Which tags are active for each task context. */
+const TASK_CONTEXT_TAGS: ReadonlyMap<TaskContext, ReadonlySet<BootstrapFileTag>> = new Map([
+  ["query", new Set(["core", "operational"])],
+  ["coding", new Set(["core", "operational", "memory"])],
+  ["session", new Set(["core", "operational", "memory", "infra"])],
+]);
+
+/**
+ * Return the tag for a bootstrap file. Unrecognized files default to "infra"
+ * so they are only loaded in full-session mode.
+ */
+export function getBootstrapFileTag(fileName: string): BootstrapFileTag {
+  return BOOTSTRAP_FILE_TAG_MAP.get(fileName) ?? "infra";
+}
+
 type WorkspaceOnboardingState = {
   version: typeof WORKSPACE_STATE_VERSION;
   bootstrapSeededAt?: string;
@@ -502,14 +547,34 @@ const MINIMAL_BOOTSTRAP_ALLOWLIST = new Set([
   DEFAULT_USER_FILENAME,
 ]);
 
+/**
+ * Filter bootstrap files based on session type and optional task context.
+ *
+ * Priority order:
+ * 1. Sub-agents / cron sessions → MINIMAL_BOOTSTRAP_ALLOWLIST (unchanged behavior)
+ * 2. Main sessions with taskContext → tag-based filtering via TASK_CONTEXT_TAGS
+ * 3. Main sessions without taskContext → all files (backward-compatible default)
+ */
 export function filterBootstrapFilesForSession(
   files: WorkspaceBootstrapFile[],
   sessionKey?: string,
+  taskContext?: TaskContext,
 ): WorkspaceBootstrapFile[] {
-  if (!sessionKey || (!isSubagentSessionKey(sessionKey) && !isCronSessionKey(sessionKey))) {
-    return files;
+  // Sub-agent / cron → minimal allowlist (existing behavior, not overridden by taskContext)
+  if (sessionKey && (isSubagentSessionKey(sessionKey) || isCronSessionKey(sessionKey))) {
+    return files.filter((file) => MINIMAL_BOOTSTRAP_ALLOWLIST.has(file.name));
   }
-  return files.filter((file) => MINIMAL_BOOTSTRAP_ALLOWLIST.has(file.name));
+
+  // Main session with task context → filter by tags
+  if (taskContext) {
+    const allowedTags = TASK_CONTEXT_TAGS.get(taskContext);
+    if (allowedTags) {
+      return files.filter((file) => allowedTags.has(getBootstrapFileTag(file.name)));
+    }
+  }
+
+  // Default: return all files (backward-compatible)
+  return files;
 }
 
 export async function loadExtraBootstrapFiles(

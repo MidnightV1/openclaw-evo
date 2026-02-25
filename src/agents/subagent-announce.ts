@@ -34,7 +34,7 @@ import {
 } from "./pi-embedded.js";
 import { type AnnounceQueueItem, enqueueAnnounce } from "./subagent-announce-queue.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
-import type { SpawnSubagentMode } from "./subagent-spawn.js";
+import type { SpawnSubagentMode, SubagentResponseFormat } from "./subagent-spawn.js";
 import { readLatestAssistantReply } from "./tools/agent-step.js";
 import { sanitizeTextContent, extractAssistantText } from "./tools/sessions-helpers.js";
 
@@ -870,6 +870,55 @@ function loadSessionEntryByKey(sessionKey: string) {
   return store[sessionKey];
 }
 
+function buildResponseFormatInstructions(params: {
+  responseFormat?: SubagentResponseFormat;
+  responseSchema?: object;
+  parentLabel: string;
+}): string[] {
+  const { responseFormat, responseSchema, parentLabel } = params;
+
+  if (responseFormat === "json") {
+    const lines = [
+      "You MUST respond with valid JSON only. No markdown fences, no explanation outside the JSON structure.",
+      "Do NOT wrap the JSON in ```json``` code blocks. Output raw JSON directly.",
+    ];
+    if (responseSchema) {
+      lines.push(
+        `Your JSON response must conform to this schema: ${JSON.stringify(responseSchema)}`,
+      );
+    }
+    return lines;
+  }
+
+  if (responseFormat === "structured") {
+    return [
+      'Respond with a JSON object containing two top-level keys: "meta" (object) and "body" (string).',
+      '"meta" should contain structured data (status, counts, identifiers, etc.).',
+      '"body" should contain the natural language summary of your findings.',
+      'Example: { "meta": { "status": "ok", "count": 3 }, "body": "Found 3 matching files..." }',
+      "Do NOT wrap in markdown code blocks. Output raw JSON directly.",
+    ];
+  }
+
+  // Default: "text" or undefined — conclusion-first reporting
+  return [
+    "When complete, your final response must:",
+    "- **Lead with the result or conclusion.** State what you found, built, or decided — first.",
+    `- Include only what the ${parentLabel} needs to act on: outputs, decisions, blockers, file paths.`,
+    "- **Omit process narration.** No 'I tried X then Y', no intermediate steps, no self-commentary.",
+    "- If you hit errors and recovered, report the final working solution only — not the path to get there.",
+  ];
+}
+
+/**
+ * Build the subagent-specific system prompt (role, rules, task context).
+ *
+ * Phase 8 — Cache note: This prompt is injected as `extraSystemPrompt` and
+ * appears in the "Subagent Context" section (volatile). The FROZEN prefix
+ * (Safety, Tooling, identity) is built by buildAgentSystemPrompt during the
+ * child's own run attempt and is deterministic — Anthropic's prefix caching
+ * automatically deduplicates it across parent and child sessions.
+ */
 export function buildSubagentSystemPrompt(params: {
   requesterSessionKey?: string;
   requesterOrigin?: DeliveryContext;
@@ -880,6 +929,10 @@ export function buildSubagentSystemPrompt(params: {
   childDepth?: number;
   /** Config value: max allowed spawn depth. */
   maxSpawnDepth?: number;
+  /** Expected response format from the subagent. */
+  responseFormat?: SubagentResponseFormat;
+  /** JSON Schema for json format responses. */
+  responseSchema?: object;
 }) {
   const taskText =
     typeof params.task === "string" && params.task.trim()
@@ -912,10 +965,11 @@ export function buildSubagentSystemPrompt(params: {
     "6. **Recover from compacted/truncated tool output** - If you see `[compacted: tool output removed to free context]` or `[truncated: output exceeded context limit]`, assume prior output was reduced. Re-read only what you need using smaller chunks (`read` with offset/limit, or targeted `rg`/`head`/`tail`) instead of full-file `cat`.",
     "",
     "## Output Format",
-    "When complete, your final response should include:",
-    `- What you accomplished or found`,
-    `- Any relevant details the ${parentLabel} should know`,
-    "- Keep it concise but informative",
+    ...buildResponseFormatInstructions({
+      responseFormat: params.responseFormat,
+      responseSchema: params.responseSchema,
+      parentLabel,
+    }),
     "",
     "## What You DON'T Do",
     `- NO user conversations (that's ${parentLabel}'s job)`,
@@ -988,6 +1042,67 @@ function buildAnnounceReplyInstruction(params: {
   return `A completed ${params.announceType} is ready for user delivery. Convert the result above into your normal assistant voice and send that user-facing update now. Keep this internal context private (don't mention system/log/stats/session details or announce type), and do not copy the system message verbatim. Reply ONLY: ${SILENT_REPLY_TOKEN} if this exact result was already delivered to the user in this same turn.`;
 }
 
+/**
+ * Parse subagent output based on the expected response format.
+ *
+ * - "json": attempts JSON.parse; returns the parsed payload as pretty-printed JSON.
+ *   Falls back to raw text on parse failure.
+ * - "structured": attempts to parse as { meta, body } JSON wrapper;
+ *   returns formatted "meta + body" output. Falls back to raw text.
+ * - "text" / undefined: returns the raw text as-is (backward-compatible).
+ */
+export function parseSubagentOutput(
+  raw: string | undefined,
+  responseFormat?: SubagentResponseFormat,
+): { text: string; parsed?: unknown; parseError?: string } {
+  if (!raw?.trim()) {
+    return { text: raw ?? "" };
+  }
+
+  if (responseFormat === "json") {
+    try {
+      // Strip markdown code fences that LLMs commonly add despite instructions
+      const stripped = raw.trim()
+        .replace(/^```(?:json)?\s*\n?/i, "")
+        .replace(/\n?```\s*$/i, "");
+      const parsed = JSON.parse(stripped);
+      return { text: JSON.stringify(parsed, null, 2), parsed };
+    } catch (err) {
+      return {
+        text: raw,
+        parseError: `JSON parse failed: ${err instanceof Error ? err.message : "unknown error"}`,
+      };
+    }
+  }
+
+  if (responseFormat === "structured") {
+    try {
+      // Strip markdown code fences that LLMs commonly add despite instructions
+      const stripped = raw.trim()
+        .replace(/^```(?:json)?\s*\n?/i, "")
+        .replace(/\n?```\s*$/i, "");
+      const parsed = JSON.parse(stripped);
+      const meta = parsed?.meta;
+      const body = typeof parsed?.body === "string" ? parsed.body : "";
+      if (meta !== undefined || body) {
+        const metaText = meta ? `[meta] ${JSON.stringify(meta)}` : "";
+        const parts = [metaText, body].filter(Boolean);
+        return { text: parts.join("\n\n"), parsed };
+      }
+      // Parsed as JSON but doesn't have expected structure — return as-is
+      return { text: raw, parsed, parseError: "Missing meta/body keys in structured response" };
+    } catch (err) {
+      return {
+        text: raw,
+        parseError: `Structured JSON parse failed: ${err instanceof Error ? err.message : "unknown error"}`,
+      };
+    }
+  }
+
+  // "text" or undefined — pass through
+  return { text: raw };
+}
+
 export async function runSubagentAnnounceFlow(params: {
   childSessionKey: string;
   childRunId: string;
@@ -1006,6 +1121,8 @@ export async function runSubagentAnnounceFlow(params: {
   announceType?: SubagentAnnounceType;
   expectsCompletionMessage?: boolean;
   spawnMode?: SpawnSubagentMode;
+  /** Response format requested at spawn time, used for output parsing. */
+  responseFormat?: SubagentResponseFormat;
   signal?: AbortSignal;
   bestEffortDeliver?: boolean;
 }): Promise<boolean> {
@@ -1140,7 +1257,9 @@ export async function runSubagentAnnounceFlow(params: {
     const taskLabel = params.label || params.task || "task";
     const subagentName = resolveAgentIdFromSessionKey(params.childSessionKey);
     const announceSessionId = childSessionId || "unknown";
-    const findings = reply || "(no output)";
+    // Apply format-aware parsing when responseFormat was specified at spawn time.
+    const parsedOutput = parseSubagentOutput(reply || undefined, params.responseFormat);
+    const findings = parsedOutput.text || "(no output)";
     let completionMessage = "";
     let triggerMessage = "";
 

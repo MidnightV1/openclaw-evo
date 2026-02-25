@@ -73,13 +73,19 @@ import {
 } from "../../skills.js";
 import { buildSystemPromptParams } from "../../system-prompt-params.js";
 import { buildSystemPromptReport } from "../../system-prompt-report.js";
+import type { AdaptivePromptState } from "../../system-prompt.js";
 import { sanitizeToolCallIdsForCloudCodeAssist } from "../../tool-call-id.js";
 import { resolveTranscriptPolicy } from "../../transcript-policy.js";
 import { DEFAULT_BOOTSTRAP_FILENAME } from "../../workspace.js";
 import { isRunnerAbortError } from "../abort.js";
+import {
+  computeHistoryBreakpointIndex,
+  resolveCacheStrategyConfig,
+  type CacheStrategyConfig,
+} from "../../cache-strategy.js";
 import { appendCacheTtlTimestamp, isCacheTtlEligibleProvider } from "../cache-ttl.js";
 import { buildEmbeddedExtensionFactories } from "../extensions.js";
-import { applyExtraParamsToAgent } from "../extra-params.js";
+import { applyExtraParamsToAgent, applyCacheStrategyToAgent } from "../extra-params.js";
 import {
   logToolSchemasForGoogle,
   sanitizeSessionHistory,
@@ -99,6 +105,7 @@ import { prepareSessionManagerForRun } from "../session-manager-init.js";
 import {
   applySystemPromptOverrideToSession,
   buildEmbeddedSystemPrompt,
+  buildEmbeddedSystemPromptBlocks,
   createSystemPromptOverride,
 } from "../system-prompt.js";
 import { dropThinkingBlocks } from "../thinking.js";
@@ -221,11 +228,25 @@ export async function resolvePromptBuildHookResult(params: {
   };
 }
 
-export function resolvePromptModeForSession(sessionKey?: string): "minimal" | "full" {
+/**
+ * Resolve the prompt mode for a session.
+ *
+ * @param sessionKey - Session key to determine prompt mode from.
+ * @param preferAdaptive - When true and the session is a main session, returns
+ *   "adaptive" instead of "full". Callers opt into this when the config enables
+ *   adaptive prompt mode (Phase 3). Default: false for backward compatibility.
+ */
+export function resolvePromptModeForSession(
+  sessionKey?: string,
+  preferAdaptive?: boolean,
+): "minimal" | "full" | "adaptive" {
   if (!sessionKey) {
-    return "full";
+    return preferAdaptive ? "adaptive" : "full";
   }
-  return isSubagentSessionKey(sessionKey) ? "minimal" : "full";
+  if (isSubagentSessionKey(sessionKey)) {
+    return "minimal";
+  }
+  return preferAdaptive ? "adaptive" : "full";
 }
 
 function summarizeMessagePayload(msg: AgentMessage): { textChars: number; imageBlocks: number } {
@@ -501,7 +522,8 @@ export async function runEmbeddedAttempt(
       },
     });
     const isDefaultAgent = sessionAgentId === defaultAgentId;
-    const promptMode = resolvePromptModeForSession(params.sessionKey);
+    const preferAdaptive = params.config?.agents?.defaults?.adaptivePrompt ?? false;
+    const promptMode = resolvePromptModeForSession(params.sessionKey, preferAdaptive);
     const docsPath = await resolveOpenClawDocsPath({
       workspaceDir: effectiveWorkspace,
       argv1: process.argv[1],
@@ -540,6 +562,44 @@ export async function runEmbeddedAttempt(
       contextFiles,
       memoryCitationsMode: params.config?.memory?.citations,
     });
+    // Phase 8 — Build system prompt blocks for segmented caching.
+    // The blocks carry volatility metadata used by the cache strategy wrapper
+    // to assign cache_control directives per content block.
+    const cacheStrategy = resolveCacheStrategyConfig(
+      params.config?.agents?.defaults?.cacheStrategy as Partial<CacheStrategyConfig> | undefined,
+    );
+    const systemPromptBlocks = cacheStrategy.systemPromptSegmentation
+      ? buildEmbeddedSystemPromptBlocks({
+          workspaceDir: effectiveWorkspace,
+          defaultThinkLevel: params.thinkLevel,
+          reasoningLevel: params.reasoningLevel ?? "off",
+          extraSystemPrompt: params.extraSystemPrompt,
+          ownerNumbers: params.ownerNumbers,
+          ownerDisplay: ownerDisplay.ownerDisplay,
+          ownerDisplaySecret: ownerDisplay.ownerDisplaySecret,
+          reasoningTagHint,
+          heartbeatPrompt: isDefaultAgent
+            ? resolveHeartbeatPrompt(params.config?.agents?.defaults?.heartbeat?.prompt)
+            : undefined,
+          skillsPrompt,
+          docsPath: docsPath ?? undefined,
+          ttsHint,
+          workspaceNotes,
+          reactionGuidance,
+          promptMode,
+          runtimeInfo,
+          messageToolHints,
+          sandboxInfo,
+          tools,
+          modelAliasLines: buildModelAliasLines(params.config),
+          userTimezone,
+          userTime,
+          userTimeFormat,
+          contextFiles,
+          memoryCitationsMode: params.config?.memory?.citations,
+        })
+      : undefined;
+
     const systemPromptReport = buildSystemPromptReport({
       source: "run",
       generatedAt: Date.now(),
@@ -681,6 +741,61 @@ export async function runEmbeddedAttempt(
         settingsManager,
         resourceLoader,
       }));
+      // Phase 3 — For adaptive prompt mode on resumed sessions, extract tool
+      // names already used in history so adaptive sections activate correctly.
+      if (promptMode === "adaptive" && session.messages.length > 0) {
+        const activatedTools = new Set<string>();
+        for (const msg of session.messages) {
+          const content = (msg as { role?: string; content?: unknown }).content;
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              if (
+                block &&
+                typeof block === "object" &&
+                (block as { type?: string }).type === "tool_use" &&
+                typeof (block as { name?: string }).name === "string"
+              ) {
+                activatedTools.add((block as { name: string }).name);
+              }
+            }
+          }
+        }
+        if (activatedTools.size > 0) {
+          const adaptiveState: AdaptivePromptState = { activatedTools };
+          systemPromptText = createSystemPromptOverride(
+            buildEmbeddedSystemPrompt({
+              workspaceDir: effectiveWorkspace,
+              defaultThinkLevel: params.thinkLevel,
+              reasoningLevel: params.reasoningLevel ?? "off",
+              extraSystemPrompt: params.extraSystemPrompt,
+              ownerNumbers: params.ownerNumbers,
+              ownerDisplay: ownerDisplay.ownerDisplay,
+              ownerDisplaySecret: ownerDisplay.ownerDisplaySecret,
+              reasoningTagHint,
+              heartbeatPrompt: isDefaultAgent
+                ? resolveHeartbeatPrompt(params.config?.agents?.defaults?.heartbeat?.prompt)
+                : undefined,
+              skillsPrompt,
+              docsPath: docsPath ?? undefined,
+              ttsHint,
+              workspaceNotes,
+              reactionGuidance,
+              promptMode,
+              runtimeInfo,
+              messageToolHints,
+              sandboxInfo,
+              tools,
+              modelAliasLines: buildModelAliasLines(params.config),
+              userTimezone,
+              userTime,
+              userTimeFormat,
+              contextFiles,
+              memoryCitationsMode: params.config?.memory?.citations,
+              adaptiveState,
+            }),
+          )();
+        }
+      }
       applySystemPromptOverrideToSession(session, systemPromptText);
       if (!session) {
         throw new Error("Embedded agent session missing");
@@ -839,6 +954,49 @@ export async function runEmbeddedAttempt(
         cacheTrace?.recordStage("session:limited", { messages: limited });
         if (limited.length > 0) {
           activeSession.agent.replaceMessages(limited);
+        }
+
+        // Phase 8 — Apply dynamic cache strategy after history is finalized.
+        // Compute history breakpoint and apply both system prompt segmentation
+        // and history window cache_control wrappers.
+        if (cacheStrategy.systemPromptSegmentation || cacheStrategy.historyWindowCaching) {
+          const isSubagent = isSubagentSessionKey(params.sessionKey ?? "");
+          const slideInterval = isSubagent
+            ? cacheStrategy.subagentWindowSlideInterval
+            : cacheStrategy.windowSlideInterval;
+          const minTurns = isSubagent
+            ? cacheStrategy.subagentMinTurnsForCaching
+            : cacheStrategy.minTurnsForCaching;
+
+          // Count assistant turns in the limited history
+          const assistantTurnCount = limited.filter(
+            (msg: AgentMessage) => (msg as { role?: string }).role === "assistant",
+          ).length;
+
+          const historyBreakpointIndex = cacheStrategy.historyWindowCaching
+            ? computeHistoryBreakpointIndex({
+                messages: limited as Array<{ role?: string }>,
+                assistantTurnCount,
+                slideInterval,
+                minTurnsForCaching: minTurns,
+              })
+            : -1;
+
+          applyCacheStrategyToAgent(activeSession.agent, {
+            systemPromptBlocks: cacheStrategy.systemPromptSegmentation
+              ? systemPromptBlocks
+              : undefined,
+            historyBreakpointIndex,
+            provider: params.provider,
+            modelId: params.modelId,
+          });
+
+          cacheTrace?.recordStage("cache-strategy:applied", {
+            segmentation: cacheStrategy.systemPromptSegmentation,
+            blockCount: systemPromptBlocks?.length ?? 0,
+            historyBreakpointIndex,
+            assistantTurnCount,
+          });
         }
       } catch (err) {
         await flushPendingToolResultsAfterIdle({

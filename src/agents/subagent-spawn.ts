@@ -22,6 +22,14 @@ import {
 export const SUBAGENT_SPAWN_MODES = ["run", "session"] as const;
 export type SpawnSubagentMode = (typeof SUBAGENT_SPAWN_MODES)[number];
 
+export const SUBAGENT_RESPONSE_FORMATS = ["json", "text", "structured"] as const;
+export type SubagentResponseFormat = (typeof SUBAGENT_RESPONSE_FORMATS)[number];
+
+export type SpawnSubagentToolPolicy = {
+  allow?: string[];
+  deny?: string[];
+};
+
 export type SpawnSubagentParams = {
   task: string;
   label?: string;
@@ -33,6 +41,12 @@ export type SpawnSubagentParams = {
   mode?: SpawnSubagentMode;
   cleanup?: "delete" | "keep";
   expectsCompletionMessage?: boolean;
+  /** Expected response format from the subagent. Defaults to "text" (backward-compatible). */
+  responseFormat?: SubagentResponseFormat;
+  /** JSON Schema describing the expected response structure (only used when responseFormat="json"). */
+  responseSchema?: object;
+  /** Per-spawn tool policy override. Applied as highest-priority layer on top of other policies. */
+  toolPolicy?: SpawnSubagentToolPolicy;
 };
 
 export type SpawnSubagentContext = {
@@ -387,6 +401,8 @@ export async function spawnSubagentDirect(
     task,
     childDepth,
     maxSpawnDepth,
+    responseFormat: params.responseFormat,
+    responseSchema: params.responseSchema,
   });
   const childTaskMessage = [
     `[Subagent Context] You are running as a subagent (depth ${childDepth}/${maxSpawnDepth}). Results auto-announce to your requester; do not busy-poll for status.`,
@@ -493,6 +509,8 @@ export async function spawnSubagentDirect(
     runTimeoutSeconds,
     expectsCompletionMessage,
     spawnMode,
+    responseFormat: params.responseFormat,
+    spawnToolPolicy: params.toolPolicy,
   });
 
   if (hookRunner?.hasHooks("subagent_spawned")) {

@@ -1,0 +1,17 @@
+{
+  "name": "@openclaw/memory-crystallizer",
+  "version": "2026.2.25",
+  "description": "Session message capture (plugin) + async LLM crystallization (worker)",
+  "type": "module",
+  "bin": {
+    "crystallize-worker": "./src/worker.ts"
+  },
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

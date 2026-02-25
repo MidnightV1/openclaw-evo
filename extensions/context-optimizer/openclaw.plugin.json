@@ -1,0 +1,24 @@
+{
+  "id": "context-optimizer",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "description": "Enable tool result compression",
+        "default": true
+      },
+      "explorationSummaryMaxChars": {
+        "type": "number",
+        "description": "Max chars for exploration result summaries",
+        "default": 500
+      },
+      "retryDeduplication": {
+        "type": "boolean",
+        "description": "Collapse consecutive identical tool calls to last result only",
+        "default": true
+      }
+    }
+  }
+}

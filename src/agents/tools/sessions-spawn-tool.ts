@@ -1,7 +1,13 @@
 import { Type } from "@sinclair/typebox";
 import type { GatewayMessageChannel } from "../../utils/message-channel.js";
 import { optionalStringEnum } from "../schema/typebox.js";
-import { SUBAGENT_SPAWN_MODES, spawnSubagentDirect } from "../subagent-spawn.js";
+import {
+  SUBAGENT_RESPONSE_FORMATS,
+  SUBAGENT_SPAWN_MODES,
+  spawnSubagentDirect,
+  type SpawnSubagentToolPolicy,
+  type SubagentResponseFormat,
+} from "../subagent-spawn.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readStringParam } from "./common.js";
 
@@ -17,6 +23,17 @@ const SessionsSpawnToolSchema = Type.Object({
   thread: Type.Optional(Type.Boolean()),
   mode: optionalStringEnum(SUBAGENT_SPAWN_MODES),
   cleanup: optionalStringEnum(["delete", "keep"] as const),
+  /** Expected response format: "json" (strict JSON), "text" (default), or "structured" (JSON meta + text body). */
+  responseFormat: optionalStringEnum(SUBAGENT_RESPONSE_FORMATS),
+  /** JSON Schema for validating the response when responseFormat="json". */
+  responseSchema: Type.Optional(Type.Object({}, { additionalProperties: true })),
+  /** Per-spawn tool policy override. allow = whitelist, deny = blacklist. Applied as highest priority. */
+  toolPolicy: Type.Optional(
+    Type.Object({
+      allow: Type.Optional(Type.Array(Type.String())),
+      deny: Type.Optional(Type.Array(Type.String())),
+    }),
+  ),
 });
 
 export function createSessionsSpawnTool(opts?: {
@@ -61,6 +78,39 @@ export function createSessionsSpawnTool(opts?: {
           : undefined;
       const thread = params.thread === true;
 
+      // Parse responseFormat
+      const responseFormatRaw = readStringParam(params, "responseFormat");
+      const responseFormat: SubagentResponseFormat | undefined =
+        responseFormatRaw && SUBAGENT_RESPONSE_FORMATS.includes(responseFormatRaw as SubagentResponseFormat)
+          ? (responseFormatRaw as SubagentResponseFormat)
+          : undefined;
+
+      // Parse responseSchema (only meaningful when responseFormat="json")
+      const responseSchema =
+        responseFormat === "json" && params.responseSchema && typeof params.responseSchema === "object"
+          ? params.responseSchema
+          : undefined;
+
+      // Parse toolPolicy
+      const rawToolPolicy = params.toolPolicy;
+      const parsedToolPolicy: SpawnSubagentToolPolicy | undefined = (() => {
+        if (!rawToolPolicy || typeof rawToolPolicy !== "object") return undefined;
+        const allow = Array.isArray((rawToolPolicy as Record<string, unknown>).allow)
+          ? ((rawToolPolicy as Record<string, unknown>).allow as string[]).filter(
+              (v) => typeof v === "string" && v.trim(),
+            )
+          : [];
+        const deny = Array.isArray((rawToolPolicy as Record<string, unknown>).deny)
+          ? ((rawToolPolicy as Record<string, unknown>).deny as string[]).filter(
+              (v) => typeof v === "string" && v.trim(),
+            )
+          : [];
+        return (allow.length > 0 || deny.length > 0)
+          ? { allow: allow.length > 0 ? allow : undefined, deny: deny.length > 0 ? deny : undefined }
+          : undefined;
+      })();
+      const toolPolicy = parsedToolPolicy;
+
       const result = await spawnSubagentDirect(
         {
           task,
@@ -73,6 +123,9 @@ export function createSessionsSpawnTool(opts?: {
           mode,
           cleanup,
           expectsCompletionMessage: true,
+          responseFormat,
+          responseSchema,
+          toolPolicy,
         },
         {
           agentSessionKey: opts?.agentSessionKey,

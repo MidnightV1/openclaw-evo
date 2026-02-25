@@ -1,0 +1,36 @@
+{
+  "id": "risk-levels",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable/disable risk level enforcement"
+      },
+      "autoApproveThreshold": {
+        "type": "number",
+        "default": 5,
+        "minimum": 1,
+        "description": "Number of consecutive approvals before Level 2 auto-approves"
+      },
+      "trashEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable trash/recycle bin for Level 4+ file deletions"
+      },
+      "trashRetentionDays": {
+        "type": "number",
+        "default": 7,
+        "minimum": 1,
+        "description": "Days to retain trashed files before auto-cleanup"
+      },
+      "promptInjection": {
+        "type": "boolean",
+        "default": true,
+        "description": "Inject risk level context into agent system prompt"
+      }
+    }
+  }
+}

@@ -3,8 +3,11 @@ import { createOpenClawTools } from "../agents/openclaw-tools.js";
 import {
   resolveEffectiveToolPolicy,
   resolveGroupToolPolicy,
+  resolveSpawnLevelToolPolicy,
   resolveSubagentToolPolicy,
 } from "../agents/pi-tools.policy.js";
+import { getSubagentDepthFromSessionStore } from "../agents/subagent-depth.js";
+import { resolveSpawnToolPolicyForSession } from "../agents/subagent-registry.js";
 import {
   applyToolPolicyPipeline,
   buildDefaultToolPolicyPipelineSteps,
@@ -242,7 +245,11 @@ export async function handleToolsInvokeHttpRequest(
     accountId: accountId ?? null,
   });
   const subagentPolicy = isSubagentSessionKey(sessionKey)
-    ? resolveSubagentToolPolicy(cfg)
+    ? resolveSubagentToolPolicy(cfg, getSubagentDepthFromSessionStore(sessionKey, { cfg }))
+    : undefined;
+  // Per-spawn tool policy: highest priority override specified at sessions_spawn time.
+  const spawnLevelPolicy = isSubagentSessionKey(sessionKey)
+    ? resolveSpawnLevelToolPolicy(resolveSpawnToolPolicyForSession(sessionKey))
     : undefined;
 
   // Build tool list (core + plugin tools).
@@ -262,6 +269,7 @@ export async function handleToolsInvokeHttpRequest(
       agentProviderPolicy,
       groupPolicy,
       subagentPolicy,
+      spawnLevelPolicy,
     ]),
   });
 
@@ -285,6 +293,7 @@ export async function handleToolsInvokeHttpRequest(
         agentId,
       }),
       { policy: subagentPolicy, label: "subagent tools.allow" },
+      { policy: spawnLevelPolicy, label: "spawn-level tools.allow" },
     ],
   });
 

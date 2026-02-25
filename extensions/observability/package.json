@@ -1,0 +1,14 @@
+{
+  "name": "@openclaw/observability",
+  "version": "2026.2.24",
+  "description": "LLM call logging, agent attribution, and cost estimation",
+  "type": "module",
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

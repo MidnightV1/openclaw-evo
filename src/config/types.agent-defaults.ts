@@ -158,8 +158,29 @@ export type AgentDefaultsConfig = {
   contextPruning?: AgentContextPruningConfig;
   /** Compaction tuning and pre-compaction memory flush behavior. */
   compaction?: AgentCompactionConfig;
+  /**
+   * Phase 8 — Dynamic cache strategy configuration.
+   * Controls system prompt segmentation and history sliding window caching
+   * to maximize cache hit rates across LLM providers.
+   */
+  cacheStrategy?: {
+    /** Enable system prompt segmentation by volatility. Default: true. */
+    systemPromptSegmentation?: boolean;
+    /** Enable history sliding window breakpoint caching. Default: true. */
+    historyWindowCaching?: boolean;
+    /** Slide the history cache breakpoint every N turns (main agent). Default: 5. */
+    windowSlideInterval?: number;
+    /** Slide every N turns for sub-agents. Default: 2. */
+    subagentWindowSlideInterval?: number;
+    /** Minimum turns before enabling history caching. Default: 4. */
+    minTurnsForCaching?: number;
+    /** Minimum turns for sub-agents. Default: 2. */
+    subagentMinTurnsForCaching?: number;
+  };
   /** Vector memory search configuration (per-agent overrides supported). */
   memorySearch?: MemorySearchConfig;
+  /** Enable adaptive prompt mode (Phase 3): defer optional system prompt sections until related tools are used. Default: false. */
+  adaptivePrompt?: boolean;
   /** Default thinking level when no /think directive is present. */
   thinkingDefault?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
   /** Default verbose level when no /verbose directive is present. */

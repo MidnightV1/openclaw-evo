@@ -1,0 +1,23 @@
+{
+  "id": "memory-crystallizer",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "description": "Enable session message capture to crystallization queue",
+        "default": true
+      },
+      "minMessageCount": {
+        "type": "number",
+        "description": "Minimum messages to trigger capture (skip trivial sessions)",
+        "default": 5
+      },
+      "queueDir": {
+        "type": "string",
+        "description": "Queue directory for pending crystallization jobs (default: ~/.openclaw/memory/crystallization-queue)"
+      }
+    }
+  }
+}

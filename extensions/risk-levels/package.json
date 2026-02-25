@@ -1,0 +1,14 @@
+{
+  "name": "@openclaw/risk-levels",
+  "version": "2026.2.25",
+  "description": "Progressive authorization with 0-5 risk levels replacing binary approval",
+  "type": "module",
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

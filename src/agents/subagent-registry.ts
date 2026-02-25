@@ -331,6 +331,7 @@ function startSubagentAnnounceCleanupFlow(runId: string, entry: SubagentRunRecor
     outcome: entry.outcome,
     spawnMode: entry.spawnMode,
     expectsCompletionMessage: entry.expectsCompletionMessage,
+    responseFormat: entry.responseFormat,
   }).then((didAnnounce) => {
     void finalizeSubagentCleanup(runId, entry.cleanup, didAnnounce);
   });
@@ -475,6 +476,11 @@ function stopSweeper() {
   }
   clearInterval(sweeper);
   sweeper = null;
+  if (listenerStop) {
+    listenerStop();
+    listenerStop = null;
+    listenerStarted = false;
+  }
 }
 
 async function sweepSubagentRuns() {
@@ -821,6 +827,8 @@ export function registerSubagentRun(params: {
   runTimeoutSeconds?: number;
   expectsCompletionMessage?: boolean;
   spawnMode?: "run" | "session";
+  responseFormat?: SubagentRunRecord["responseFormat"];
+  spawnToolPolicy?: SubagentRunRecord["spawnToolPolicy"];
 }) {
   const now = Date.now();
   const cfg = loadConfig();
@@ -844,6 +852,8 @@ export function registerSubagentRun(params: {
     label: params.label,
     model: params.model,
     runTimeoutSeconds,
+    responseFormat: params.responseFormat,
+    spawnToolPolicy: params.spawnToolPolicy,
     createdAt: now,
     startedAt: now,
     archiveAtMs,
@@ -929,8 +939,9 @@ export function resetSubagentRegistryForTests(opts?: { persist?: boolean }) {
   resumedRuns.clear();
   endedHookInFlightRunIds.clear();
   resetAnnounceQueuesForTests();
-  stopSweeper();
+  stopSweeper(); // Also stops listener if sweeper was active
   restoreAttempted = false;
+  // Safety net: stop listener even if sweeper was never started
   if (listenerStop) {
     listenerStop();
     listenerStop = null;
@@ -1059,6 +1070,23 @@ export function countActiveRunsForSession(requesterSessionKey: string): number {
     getSubagentRunsSnapshotForRead(subagentRuns),
     requesterSessionKey,
   );
+}
+
+/**
+ * Look up the spawn-level tool policy for a child session.
+ * Returns undefined if no spawn-level overrides were specified.
+ */
+export function resolveSpawnToolPolicyForSession(
+  childSessionKey: string,
+): SubagentRunRecord["spawnToolPolicy"] | undefined {
+  const runIds = findRunIdsByChildSessionKey(childSessionKey);
+  for (const runId of runIds) {
+    const entry = subagentRuns.get(runId);
+    if (entry?.spawnToolPolicy) {
+      return entry.spawnToolPolicy;
+    }
+  }
+  return undefined;
 }
 
 export function countActiveDescendantRuns(rootSessionKey: string): number {

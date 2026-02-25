@@ -1,0 +1,18 @@
+{
+  "id": "task-logging",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "retentionDays": {
+        "type": "number",
+        "description": "Days to retain task log markdown files before cleanup",
+        "default": 90
+      },
+      "logDir": {
+        "type": "string",
+        "description": "Directory for task log markdown files. Default: ~/.openclaw/task-logs"
+      }
+    }
+  }
+}

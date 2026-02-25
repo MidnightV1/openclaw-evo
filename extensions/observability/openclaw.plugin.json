@@ -1,0 +1,31 @@
+{
+  "id": "observability",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "rawRetentionDays": {
+        "type": "number",
+        "description": "Days to retain raw LLM request/response data",
+        "default": 7
+      },
+      "statsRetentionDays": {
+        "type": "number",
+        "description": "Days to retain stats (0 = forever)",
+        "default": 0
+      },
+      "pricingConfigPath": {
+        "type": "string",
+        "description": "Path to custom pricing.json"
+      },
+      "statsDir": {
+        "type": "string",
+        "description": "Directory for stats JSONL files. Default: ~/.openclaw/observability/stats"
+      },
+      "rawDir": {
+        "type": "string",
+        "description": "Directory for raw LLM request/response data. Default: ~/.openclaw/observability/raw"
+      }
+    }
+  }
+}
