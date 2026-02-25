@@ -119,6 +119,23 @@ const MOONSHOT_DEFAULT_COST = {
   cacheWrite: 4.00,
 };
 
+const GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
+const GOOGLE_DEFAULT_CONTEXT_WINDOW = 1048576;
+const GOOGLE_DEFAULT_MAX_TOKENS = 65536;
+// Pricing per 1M tokens (USD) — https://ai.google.dev/pricing
+const GOOGLE_PRO_COST = {
+  input: 2.0,
+  output: 12.0,
+  cacheRead: 0,
+  cacheWrite: 0,
+};
+const GOOGLE_FLASH_COST = {
+  input: 0.5,
+  output: 3.0,
+  cacheRead: 0,
+  cacheWrite: 0,
+};
+
 const KIMI_CODING_BASE_URL = "https://api.kimi.com/coding/";
 const KIMI_CODING_DEFAULT_MODEL_ID = "k2p5";
 const KIMI_CODING_DEFAULT_CONTEXT_WINDOW = 262144;
@@ -387,6 +404,42 @@ function normalizeGoogleProvider(provider: ProviderConfig): ProviderConfig {
     return { ...model, id: nextId };
   });
   return mutated ? { ...provider, models } : provider;
+}
+
+export function buildGoogleProvider(): ProviderConfig {
+  return {
+    baseUrl: GOOGLE_BASE_URL,
+    api: "google-generative-ai",
+    models: [
+      {
+        id: "gemini-3.1-pro-preview",
+        name: "Gemini 3.1 Pro",
+        reasoning: true,
+        input: ["text", "image"],
+        cost: GOOGLE_PRO_COST,
+        contextWindow: GOOGLE_DEFAULT_CONTEXT_WINDOW,
+        maxTokens: GOOGLE_DEFAULT_MAX_TOKENS,
+      },
+      {
+        id: "gemini-3-pro-preview",
+        name: "Gemini 3 Pro",
+        reasoning: true,
+        input: ["text", "image"],
+        cost: GOOGLE_PRO_COST,
+        contextWindow: GOOGLE_DEFAULT_CONTEXT_WINDOW,
+        maxTokens: GOOGLE_DEFAULT_MAX_TOKENS,
+      },
+      {
+        id: "gemini-3-flash-preview",
+        name: "Gemini 3 Flash",
+        reasoning: true,
+        input: ["text", "image"],
+        cost: GOOGLE_FLASH_COST,
+        contextWindow: GOOGLE_DEFAULT_CONTEXT_WINDOW,
+        maxTokens: GOOGLE_DEFAULT_MAX_TOKENS,
+      },
+    ],
+  };
 }
 
 export function normalizeProviders(params: {
@@ -816,6 +869,13 @@ export async function resolveImplicitProviders(params: {
       ...buildMinimaxPortalProvider(),
       apiKey: MINIMAX_OAUTH_PLACEHOLDER,
     };
+  }
+
+  const googleKey =
+    resolveEnvApiKeyVarName("google") ??
+    resolveApiKeyFromProfiles({ provider: "google", store: authStore });
+  if (googleKey) {
+    providers.google = { ...buildGoogleProvider(), apiKey: googleKey };
   }
 
   const moonshotKey =
