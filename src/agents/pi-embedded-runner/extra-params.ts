@@ -537,6 +537,21 @@ type SystemPromptBlockLike = {
  */
 const SEGMENTED_CACHE_PROVIDERS = new Set(["anthropic", "openrouter"]);
 
+/**
+ * Provider families that support OpenAI-compatible automatic prefix caching.
+ *
+ * These providers cache request prefixes automatically on the platform side —
+ * no explicit cache_control injection is required. The client only needs to
+ * ensure the stable prefix (frozen + stable content) appears before volatile
+ * content so the longest possible prefix lands in the cache.
+ *
+ * Cache hits are reflected in `usage.prompt_tokens_details.cached_tokens`.
+ *
+ * Supported providers:
+ * - moonshot: kimi-k2.5, automatic caching (¥0.70/1M hit vs ¥4.00/1M miss)
+ */
+const OPENAI_PREFIX_CACHE_PROVIDERS = new Set(["moonshot"]);
+
 function supportsSegmentedCache(provider: string, modelId: string): boolean {
   const p = provider.toLowerCase();
   if (SEGMENTED_CACHE_PROVIDERS.has(p)) {
@@ -551,6 +566,76 @@ function supportsSegmentedCache(provider: string, modelId: string): boolean {
     return isAnthropicBedrockModel(modelId);
   }
   return false;
+}
+
+function supportsOpenAIPrefixCache(provider: string): boolean {
+  return OPENAI_PREFIX_CACHE_PROVIDERS.has(provider.toLowerCase());
+}
+
+/**
+ * Volatility sort order for prefix-cache reordering.
+ * Lower number = appears earlier in the reordered prompt.
+ */
+const VOLATILITY_SORT_ORDER: Record<string, number> = { frozen: 0, stable: 1, volatile: 2 };
+
+/**
+ * Create a streamFn wrapper that reorders the system prompt for OpenAI-compatible
+ * automatic prefix caching.
+ *
+ * The issue with the default prompt assembly order: volatile sections (Group Chat
+ * Context, Reactions, Reasoning Format) can appear before large stable sections
+ * (Project Context files, SOUL.md, etc.). For prefix-based caching, any change
+ * in the volatile sections invalidates the cache for everything after them —
+ * including the large stable files.
+ *
+ * This wrapper re-sorts blocks into frozen → stable → volatile order before
+ * flattening to a string, ensuring the largest stable content sits in the cache
+ * prefix and only the tail (volatile) sections cause cache misses.
+ *
+ * When the provider doesn't support prefix caching, or no blocks are provided,
+ * the wrapper is a no-op passthrough.
+ */
+function createOpenAIPrefixCacheWrapper(
+  baseStreamFn: StreamFn | undefined,
+  blocks: SystemPromptBlockLike[] | undefined,
+  provider: string,
+  modelId: string,
+): StreamFn {
+  const underlying = baseStreamFn ?? streamSimple;
+
+  if (!blocks || blocks.length === 0 || !supportsOpenAIPrefixCache(provider)) {
+    return underlying;
+  }
+
+  // Sort blocks: frozen → stable → volatile (stable sort to preserve section order within tier)
+  const sorted = [...blocks].sort(
+    (a, b) =>
+      (VOLATILITY_SORT_ORDER[a.volatility] ?? 1) - (VOLATILITY_SORT_ORDER[b.volatility] ?? 1),
+  );
+  const reorderedPrompt = sorted.map((b) => b.text).join("\n");
+
+  return (model, context, options) => {
+    const originalOnPayload = options?.onPayload;
+    return underlying(model, context, {
+      ...options,
+      onPayload: (payload) => {
+        const messages = (payload as Record<string, unknown>)?.messages;
+        if (Array.isArray(messages)) {
+          for (const msg of messages as PayloadMessage[]) {
+            if (msg.role !== "system" && msg.role !== "developer") {
+              continue;
+            }
+            // Only reorder if the content is still a plain string (openai-completions format).
+            // Content block arrays (Anthropic format) are handled by the segmented cache wrapper.
+            if (typeof msg.content === "string") {
+              msg.content = reorderedPrompt;
+            }
+          }
+        }
+        originalOnPayload?.(payload);
+      },
+    });
+  };
 }
 
 /**
@@ -779,17 +864,32 @@ export function applyCacheStrategyToAgent(
     modelId: string;
   },
 ): void {
-  // Layer 1: System prompt segmentation
+  // Layer 1: System prompt cache — two strategies, mutually exclusive:
+  //   a) Segmented cache (Anthropic/OpenRouter): convert string to content blocks + cache_control
+  //   b) OpenAI prefix cache (moonshot, etc.): reorder blocks frozen→stable→volatile for longest
+  //      stable prefix; platform-side automatic caching handles the rest
   if (params.systemPromptBlocks && params.systemPromptBlocks.length > 0) {
-    log.debug(
-      `applying segmented system cache (${params.systemPromptBlocks.length} blocks) for ${params.provider}/${params.modelId}`,
-    );
-    agent.streamFn = createSegmentedSystemCacheWrapper(
-      agent.streamFn,
-      params.systemPromptBlocks,
-      params.provider,
-      params.modelId,
-    );
+    if (supportsSegmentedCache(params.provider, params.modelId)) {
+      log.debug(
+        `applying segmented system cache (${params.systemPromptBlocks.length} blocks) for ${params.provider}/${params.modelId}`,
+      );
+      agent.streamFn = createSegmentedSystemCacheWrapper(
+        agent.streamFn,
+        params.systemPromptBlocks,
+        params.provider,
+        params.modelId,
+      );
+    } else if (supportsOpenAIPrefixCache(params.provider)) {
+      log.debug(
+        `applying OpenAI prefix cache ordering (${params.systemPromptBlocks.length} blocks) for ${params.provider}/${params.modelId}`,
+      );
+      agent.streamFn = createOpenAIPrefixCacheWrapper(
+        agent.streamFn,
+        params.systemPromptBlocks,
+        params.provider,
+        params.modelId,
+      );
+    }
   }
 
   // Layer 2: History sliding window breakpoint
