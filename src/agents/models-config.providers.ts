@@ -111,13 +111,12 @@ const MOONSHOT_BASE_URL = process.env.MOONSHOT_BASE_URL ?? "https://api.moonshot
 const MOONSHOT_DEFAULT_MODEL_ID = "kimi-k2.5";
 const MOONSHOT_DEFAULT_CONTEXT_WINDOW = 256000;
 const MOONSHOT_DEFAULT_MAX_TOKENS = 8192;
-// Pricing per 1M tokens (USD) — https://platform.moonshot.cn/docs/pricing/chat
-// CNY rates at ≈7.3 CNY/USD: input ¥4.00 → $0.55, output ¥21.00 → $2.88, cache hit ¥0.70 → $0.096
+// Pricing per 1M tokens (CNY ¥) — https://platform.moonshot.cn/docs/pricing/chat
 const MOONSHOT_DEFAULT_COST = {
-  input: 0.55,
-  output: 2.88,
-  cacheRead: 0.096,
-  cacheWrite: 0.55,
+  input: 4.00,
+  output: 21.00,
+  cacheRead: 0.70,
+  cacheWrite: 4.00,
 };
 
 const KIMI_CODING_BASE_URL = "https://api.kimi.com/coding/";
