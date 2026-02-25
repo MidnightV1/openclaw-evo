@@ -8,10 +8,10 @@
     "provider": "gemini",
     "model": "gemini-3-flash-preview"
   },
-  "portraitPath": "~/.openclaw/memory/portrait.md",
+  "portraitPath": "/data/memory/portrait.md",
   "routes": [
     {
-      "path": "bootstrap/USER_COGNITION.md",
+      "path": "/data/workspace/USER.md",
       "purpose": "User cognition portrait — behavioral patterns, decision-making style, communication preferences, cognitive tendencies, abstraction level, delegation boundaries. Written from the agent's perspective about the user it serves."
     }
   ],
