@@ -228,6 +228,11 @@ export function createCacheTrace(params: CacheTraceInit): CacheTrace | null {
     if (payload.error) {
       event.error = payload.error;
     }
+    // Phase 8 cache strategy fields
+    if (payload.segmentation !== undefined) event.segmentation = payload.segmentation;
+    if (payload.blockCount !== undefined) event.blockCount = payload.blockCount;
+    if (payload.historyBreakpointIndex !== undefined) event.historyBreakpointIndex = payload.historyBreakpointIndex;
+    if (payload.assistantTurnCount !== undefined) event.assistantTurnCount = payload.assistantTurnCount;
 
     const line = safeJsonStringify(event);
     if (!line) {

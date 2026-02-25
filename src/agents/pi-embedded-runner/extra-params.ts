@@ -620,6 +620,7 @@ function createOpenAIPrefixCacheWrapper(
       ...options,
       onPayload: (payload) => {
         const messages = (payload as Record<string, unknown>)?.messages;
+        let reordered = false;
         if (Array.isArray(messages)) {
           for (const msg of messages as PayloadMessage[]) {
             if (msg.role !== "system" && msg.role !== "developer") {
@@ -629,8 +630,14 @@ function createOpenAIPrefixCacheWrapper(
             // Content block arrays (Anthropic format) are handled by the segmented cache wrapper.
             if (typeof msg.content === "string") {
               msg.content = reorderedPrompt;
+              reordered = true;
             }
           }
+        }
+        if (!reordered) {
+          log.debug(
+            `[prefix-cache] no system/developer string message found in payload for ${provider}/${modelId}`,
+          );
         }
         originalOnPayload?.(payload);
       },
