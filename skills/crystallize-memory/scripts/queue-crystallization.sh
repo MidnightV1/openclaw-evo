@@ -21,12 +21,14 @@ if [[ ! -f "$SESSION_FILE" ]]; then
   exit 1
 fi
 
-# Extract messages array from session JSONL
-# Session lines: {"type":"message","message":{"role":...,"content":[...]}}
-MESSAGES=$(jq -s '[.[] | select(.type == "message") | .message]' "$SESSION_FILE")
+# Extract messages to a temp file to avoid ARG_MAX limits on large sessions
+TEMP_MESSAGES=$(mktemp /tmp/crystallize-XXXXXX.json)
+trap 'rm -f "$TEMP_MESSAGES"' EXIT
+
+jq -s '[.[] | select(.type == "message") | .message]' "$SESSION_FILE" > "$TEMP_MESSAGES"
 
 # Count user messages — skip sessions with insufficient signal
-USER_COUNT=$(echo "$MESSAGES" | jq '[.[] | select(.role == "user")] | length')
+USER_COUNT=$(jq '[.[] | select(.role == "user")] | length' "$TEMP_MESSAGES")
 if [[ "$USER_COUNT" -lt 3 ]]; then
   echo "Only $USER_COUNT user messages — skipping (minimum 3 required)"
   exit 0
@@ -39,17 +41,19 @@ TS=$(date +%s%3N)
 SID="${SESSION_ID:0:8}"
 QUEUE_FILE="$QUEUE_DIR/${TS}_${SID}_skill.json"
 
+# Use --slurpfile to read messages from temp file (avoids ARG_MAX for large sessions).
+# --slurpfile wraps content in an array, so $messages[0] unwraps it.
 jq -n \
   --arg sessionId "$SESSION_ID" \
   --arg agentId "$AGENT_ID" \
   --arg workspaceDir "$WORKSPACE_DIR" \
-  --argjson messages "$MESSAGES" \
+  --slurpfile messages "$TEMP_MESSAGES" \
   --arg capturedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   '{
     sessionId: $sessionId,
     agentId: $agentId,
     workspaceDir: $workspaceDir,
-    messages: $messages,
+    messages: $messages[0],
     success: true,
     skillTriggered: true,
     capturedAt: $capturedAt
